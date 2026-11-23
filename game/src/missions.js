@@ -1,212 +1,159 @@
-// The story of Solmar Bay: six missions from Mama Rosa's cafe to the
-// Golden Palm heist. Each mission is a small state machine: an objective,
-// a target on the map, stages, and a reward. The manager watches the
-// world each step and advances the mission when its conditions are met.
-import { makeCar } from './vehicles.js';
-import { addWanted, makeGangMember } from './people.js';
+// The six-mission story of Solmar Bay. The runner tracks which mission is live,
+// which stop or stage it is on, and how far the vault channel has run. Completing
+// a mission pays out at once; the sixth pays out and ends the story. The hooks
+// let the world react when a mission starts (the tail, the turf war) or when the
+// vault cracks (the four-star heat that follows).
+import { MISSION_PAYOUTS } from './config.js';
 
-function landmark(state, kind) {
-  return state.city.landmarks.find((l) => l.kind === kind);
-}
-
-function landmarkCentre(state, kind) {
-  const lm = landmark(state, kind);
-  const b = state.city.buildings.find((x) => x.kind === kind);
-  if (!b) return { x: 400, y: 400 };
-  return { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-}
-
-export const MISSION_DEFS = [
+const DEFS = [
   {
-    name: 'Welcome to Solmar',
-    brief: 'Rico Vega just rolled into Solmar Bay with $120 and a busted scooter. Mama Rosa runs the cafe on Coral Row and she has work. Get to her cafe.',
-    reward: 100,
+    name: 'Cafe Job',
+    hint: 'Pick up the order at Mama Rosa\u2019s Cafe, then drop it at Sunset Mall.',
+    stops: [
+      { x: 1160, y: 1080, r: 90 },
+      { x: 1600, y: 1150, r: 90 },
+    ],
   },
   {
     name: 'Pizza Run',
-    brief: 'Mama Rosa needs three pizzas delivered across town, fast. The clock is running — drive like the tips depend on it, because they do.',
-    reward: 150,
+    hint: 'Three drops, no dawdling: the mall corner, the north road, the east road.',
+    stops: [
+      { x: 600, y: 860, r: 90 },
+      { x: 1400, y: 520, r: 90 },
+      { x: 2200, y: 1540, r: 90 },
+    ],
   },
   {
-    name: 'Borrowed Wheels',
-    brief: 'A red Comet GT is parked outside the Golden Palm Casino. The Vultures left the keys in it. Take it and bring it to the garage at the hideout. Try not to be seen.',
-    reward: 250,
+    name: 'Steal the Comet',
+    hint: 'The red Comet GT is parked on the east road. Take it to the casino garage.',
+    stops: [
+      { x: 2240, y: 1330, r: 70, needComet: true },
+      { x: 390, y: 460, r: 100 },
+    ],
   },
   {
-    name: 'Heat',
-    brief: 'The Bayview PD is all over you. Three stars. Lose them — stay out of sight until the heat dies down, and do not get busted.',
-    reward: 200,
+    name: 'Lose the Tail',
+    hint: 'Three stars. Break line of sight until the heat dies down.',
   },
   {
     name: 'Turf War',
-    brief: 'The Vultures are hitting Mama Rosa\'s cafe to send a message. Hold the block. Drop all eight of them before they wreck the place.',
-    reward: 300,
+    hint: 'Eight Vultures hold the mall. Clear them out.',
   },
   {
-    name: 'The Golden Palm',
-    brief: 'The big one. Walk into the Golden Palm Casino, empty the vault, and get out. Four stars the moment the alarm trips. Lose the cops and bring the take to the hideout.',
-    reward: 800,
+    name: 'Golden Palm Heist',
+    hint: 'Park at the casino and crack the vault, then get back to the cafe.',
+    stops: [
+      { x: 390, y: 460, r: 100 },
+      { x: 1160, y: 1080, r: 100 },
+    ],
+    channelSeconds: 5,
   },
 ];
 
-export function createMissionManager(state) {
-  const manager = {
-    index: 0,
-    active: false,
-    stage: 0,
-    objective: 'Talk to Mama Rosa.',
-    timer: 0,
-    target: null,
-    progress: 0,
-    stops: [],
-    stopIndex: 0,
-    targetCar: null,
-    done: false,
+export function createMissions() {
+  return {
+    runner: { index: 0, stage: 0, channel: 0, stop: 0 },
+    defs: DEFS,
   };
+}
 
-  function setObjective(text, target) {
-    manager.objective = text;
-    if (target) manager.target = target;
+function completeMission(state, hooks) {
+  const runner = state.missions.runner;
+  const payout = MISSION_PAYOUTS[runner.index];
+  state.player.cash += payout;
+  runner.index += 1;
+  runner.stage = 0;
+  runner.channel = 0;
+  runner.stop = 0;
+  if (runner.index >= DEFS.length) {
+    state.over = 'complete';
+    return;
   }
+  hooks.onMissionStart(runner.index);
+}
 
-  function startMission(i) {
-    manager.index = i;
-    manager.active = true;
-    manager.stage = 0;
-    manager.progress = 0;
-    manager.stopIndex = 0;
-    manager.targetCar = null;
-    const p = state.player;
-    if (i === 0) {
-      const cafe = landmarkCentre(state, 'cafe');
-      setObjective('Drive to Mama Rosa\'s Cafe on Coral Row.', { x: cafe.x, y: cafe.y + 90, label: 'Cafe' });
-    } else if (i === 1) {
-      manager.timer = 90;
-      manager.stops = [
-        { x: 480, y: 480, label: 'Pizza 1' },
-        { x: 2080, y: 1120, label: 'Pizza 2' },
-        { x: 1120, y: 1440, label: 'Pizza 3' },
-      ];
-      setObjective('Deliver pizza 1 of 3 — fast. 90 seconds.', manager.stops[0]);
-    } else if (i === 2) {
-      const casino = landmarkCentre(state, 'casino');
-      const car = makeCar(state.random, casino.x + 130, casino.y + 110, 0, { color: '#c23b2e', model: 'Comet GT', parked: true });
-      car.missionCar = true;
-      state.cars.push(car);
-      manager.targetCar = car;
-      setObjective('Steal the red Comet GT outside the casino.', { x: car.x, y: car.y, label: 'Comet GT' });
-    } else if (i === 3) {
-      addWanted(state, 3, 'heat');
-      manager.timer = 120;
-      setObjective('Lose the cops. Stay out of sight until your wanted level clears.', null);
-    } else if (i === 4) {
-      const cafe = landmarkCentre(state, 'cafe');
-      state.gang = [];
-      for (let k = 0; k < 8; k += 1) {
-        const g = makeGangMember(state.random, cafe.x + state.random.range(-160, 160), cafe.y + state.random.range(-140, 140));
-        state.gang.push(g);
-      }
-      setObjective('Defend the cafe — drop all 8 Vultures.', { x: cafe.x, y: cafe.y, label: 'Cafe' });
-    } else if (i === 5) {
-      const casino = landmarkCentre(state, 'casino');
-      setObjective('Walk into the Golden Palm Casino.', { x: casino.x, y: casino.y + 100, label: 'Casino' });
+function near(player, stop) {
+  return Math.hypot(player.x - stop.x, player.y - stop.y) <= stop.r;
+}
+
+export function updateMissions(state, dt, hooks) {
+  if (state.over) return;
+  const runner = state.missions.runner;
+  const def = DEFS[runner.index];
+  if (!def) return;
+  const player = state.player;
+
+  if (runner.index === 0 || runner.index === 1) {
+    const stop = def.stops[runner.stop];
+    if (near(player, stop)) {
+      runner.stop += 1;
+      if (runner.stop >= def.stops.length) completeMission(state, hooks);
     }
+    return;
   }
 
-  function completeMission() {
-    const def = MISSION_DEFS[manager.index];
-    state.player.cash += def.reward;
-    state.player.missionsDone += 1;
-    state.events.push({ type: 'mission', name: def.name, reward: def.reward });
-    state.saveDirty = true;
-    if (manager.index >= MISSION_DEFS.length - 1) {
-      manager.done = true;
-      manager.active = false;
-      manager.objective = 'Story complete. Solmar Bay is yours — free roam, Rico.';
-      manager.target = null;
+  if (runner.index === 2) {
+    if (runner.stage === 0) {
+      if (player.inCar && player.inCar.kind === 'comet') runner.stage = 1;
       return;
     }
-    manager.active = false;
-    manager.objective = `Mission complete: ${def.name} (+$${def.reward}). Press E to start the next job.`;
-    manager.target = null;
+    if (near(player, def.stops[1])) completeMission(state, hooks);
+    return;
   }
 
-  function failMission(reason) {
-    if (!manager.active) return;
-    manager.active = false;
-    manager.objective = `Mission failed: ${reason}. Press E to try again.`;
-    manager.target = null;
-    state.events.push({ type: 'missionFailed', reason });
+  if (runner.index === 3) {
+    if (player.wanted === 0) completeMission(state, hooks);
+    return;
   }
 
-  function update(dt) {
-    if (!manager.active) return;
-    const p = state.player;
-    const dist = (t) => (t ? Math.hypot(p.x - t.x, p.y - t.y) : Infinity);
+  if (runner.index === 4) {
+    if (!state.people.some((person) => person.kind === 'vulture')) completeMission(state, hooks);
+    return;
+  }
 
-    if (manager.index === 0) {
-      if (dist(manager.target) < 70) completeMission();
-    } else if (manager.index === 1) {
-      manager.timer -= dt;
-      if (manager.timer <= 0) {
-        failMission('Out of time on the pizza run.');
-        return;
+  // Mission 6: park at the casino, hold still to crack the vault, then run.
+  if (runner.stage === 0) {
+    if (player.inCar && near(player, def.stops[0])) runner.stage = 1;
+    return;
+  }
+  if (runner.stage === 1) {
+    const car = player.inCar;
+    const still = car && Math.abs(car.speed) < 30;
+    if (car && still && Math.hypot(player.x - def.stops[0].x, player.y - def.stops[0].y) <= 90) {
+      runner.channel += dt;
+      if (runner.channel >= def.channelSeconds) {
+        runner.stage = 2;
+        runner.channel = def.channelSeconds;
+        hooks.onVaultCracked();
       }
-      if (dist(manager.target) < 70) {
-        state.player.cash += 20;
-        manager.stopIndex += 1;
-        if (manager.stopIndex >= manager.stops.length) {
-          completeMission();
-        } else {
-          const next = manager.stops[manager.stopIndex];
-          setObjective(`Deliver pizza ${manager.stopIndex + 1} of 3 — ${Math.ceil(manager.timer)}s left.`, next);
-        }
-      } else {
-        manager.objective = `Deliver pizza ${manager.stopIndex + 1} of 3 — ${Math.ceil(manager.timer)}s left.`;
-      }
-    } else if (manager.index === 2) {
-      if (manager.stage === 0) {
-        if (p.car === manager.targetCar) {
-          manager.stage = 1;
-          const hide = state.city.hideout;
-          setObjective('Deliver the Comet GT to the garage at the hideout.', { x: hide.x, y: hide.y, label: 'Garage' });
-        }
-      } else if (dist(manager.target) < 80 && p.car === manager.targetCar) {
-        completeMission();
-      }
-    } else if (manager.index === 3) {
-      manager.timer -= dt;
-      if (p.stars === 0) {
-        completeMission();
-      } else if (manager.timer <= 0) {
-        failMission('The heat never died down.');
-      }
-    } else if (manager.index === 4) {
-      const alive = state.gang.filter((g) => g.health > 0).length;
-      manager.objective = `Defend the cafe — ${alive} Vultures left.`;
-      if (alive === 0) completeMission();
-    } else if (manager.index === 5) {
-      if (manager.stage === 0) {
-        if (dist(manager.target) < 80 && !p.car) {
-          manager.stage = 1;
-          manager.progress = 0;
-          setObjective('Empty the vault — hold position.', landmarkCentre(state, 'casino'));
-        }
-      } else if (manager.stage === 1) {
-        manager.progress += dt;
-        manager.objective = `Emptying the vault… ${Math.ceil(5 - manager.progress)}s.`;
-        if (manager.progress >= 5) {
-          manager.stage = 2;
-          addWanted(state, 4, 'casino robbery');
-          const hide = state.city.hideout;
-          setObjective('Get the take to the hideout — and lose the cops.', { x: hide.x, y: hide.y, label: 'Hideout' });
-        }
-      } else if (manager.stage === 2) {
-        if (dist(manager.target) < 80 && p.stars === 0) completeMission();
-        else if (dist(manager.target) < 80) manager.objective = 'You are here — but the cops are still on you. Lose them first.';
-      }
+    } else {
+      runner.channel = Math.max(0, runner.channel - dt);
     }
+    return;
   }
+  if (near(player, def.stops[1])) completeMission(state, hooks);
+}
 
-  return { manager, startMission, completeMission, failMission, update };
+/** The one-line objective the HUD shows. */
+export function missionText(state) {
+  const runner = state.missions.runner;
+  if (runner.index >= DEFS.length) return 'Story complete. Solmar Bay is yours.';
+  const def = DEFS[runner.index];
+  if (runner.index === 2 && runner.stage === 0) return 'Steal the Comet: get in the red Comet GT.';
+  if (runner.index === 5 && runner.stage === 1) {
+    return `Golden Palm Heist: cracking the vault ${Math.floor((runner.channel / def.channelSeconds) * 100)}% — hold still.`;
+  }
+  if (runner.index === 5 && runner.stage === 2) return 'Golden Palm Heist: run for the cafe safehouse!';
+  return `${def.name}: ${def.hint}`;
+}
+
+/** The current target point, for the minimap arrow. Null when there is none. */
+export function missionTarget(state) {
+  const runner = state.missions.runner;
+  if (runner.index >= DEFS.length) return null;
+  const def = DEFS[runner.index];
+  if (runner.index === 0 || runner.index === 1) return def.stops[runner.stop];
+  if (runner.index === 2) return runner.stage === 0 ? def.stops[0] : def.stops[1];
+  if (runner.index === 3 || runner.index === 4) return null;
+  return runner.stage === 2 ? def.stops[1] : def.stops[0];
 }

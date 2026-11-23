@@ -1,263 +1,147 @@
-// The people of Solmar Bay: pedestrians on the sidewalks, the police who
-// answer the wanted level, and the Vultures gang. Pedestrians wander and
-// flee from danger; police chase on foot and by car; gang members hold
-// their turf and shoot at the player.
-import { GANG, PEDESTRIANS, PLAYER, POLICE, WANTED, WORLD } from './config.js';
-import { nearestRoad, resolveBuildingCollision } from './city.js';
-import { makeCar } from './vehicles.js';
+// The people of Solmar Bay: pedestrians walking the sidewalks, foot cops who
+// chase the player on foot, and the Vultures who hold the mall in mission five.
+// Pedestrians stay on the sidewalk strips beside the roads; cops and Vultures
+// steer straight at the player and slide along walls.
+import { HORIZONTAL_ROADS, PEOPLE_COUNT, VERTICAL_ROADS, WORLD } from './config.js';
+import { nearestRoadX, nearestRoadY, resolveSolid } from './city.js';
+import { pick } from './random.js';
 
-const PED_COLORS = ['#e8b73a', '#7a4a9e', '#2e6fc2', '#c23b2e', '#3aa655', '#d97b2e', '#e8e4da', '#4a7a9e'];
-
-export function makePedestrian(random, x, y) {
+function makePedestrian(random) {
+  const vertical = random() < 0.5;
+  if (vertical) {
+    const road = pick(random, VERTICAL_ROADS);
+    return {
+      x: road + (random() < 0.5 ? 44 : -44),
+      y: 100 + random() * (WORLD.height - 200),
+      angle: random() < 0.5 ? Math.PI / 2 : -Math.PI / 2,
+      speed: 34 + random() * 26,
+      kind: 'ped',
+      health: 1,
+      color: 'ped',
+    };
+  }
+  const road = pick(random, HORIZONTAL_ROADS);
   return {
-    x, y, angle: random.range(0, Math.PI * 2),
-    speed: PEDESTRIANS.walkSpeed * random.range(0.8, 1.2),
-    target: null,
-    state: 'walk',
-    color: random.pick(PED_COLORS),
-    scared: 0,
-    dead: false,
-    wallet: random.int(5, 40),
+    x: 100 + random() * (WORLD.width - 200),
+    y: road + (random() < 0.5 ? 44 : -44),
+    angle: random() < 0.5 ? 0 : Math.PI,
+    speed: 34 + random() * 26,
+    kind: 'ped',
+    health: 1,
+    color: 'ped',
   };
 }
 
-/** Pedestrians spread over the sidewalks. */
-export function spawnPedestrians(random, count) {
-  const peds = [];
-  for (let i = 0; i < count; i += 1) {
-    const x = random.range(200, 2360);
-    const y = random.range(200, 1720);
-    peds.push(makePedestrian(random, x, y));
-  }
-  return peds;
+export function createPeople(random) {
+  const people = [];
+  for (let i = 0; i < PEOPLE_COUNT; i += 1) people.push(makePedestrian(random));
+  return people;
 }
 
-/** One pedestrian step: walk to its target, or run from danger. */
-export function stepPedestrian(ped, dt, danger, random) {
-  if (ped.dead) return;
-  if (danger) {
-    ped.state = 'flee';
-    ped.scared = 2;
-  } else if (ped.scared > 0) {
-    ped.scared -= dt;
-    if (ped.scared <= 0) ped.state = 'walk';
+/** A pedestrian walks its sidewalk; at an intersection it sometimes turns. */
+function stepPedestrian(person, random, dt, city) {
+  const step = person.speed * dt;
+  const alongX = Math.abs(Math.cos(person.angle)) > 0.7;
+  if (alongX) {
+    person.x += Math.cos(person.angle) * step;
+    const road = nearestRoadX(person.x);
+    if (Math.abs(person.x - road) < 24 && random() < 0.02) {
+      person.angle = random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
+      person.y = nearestRoadY(person.y) + (random() < 0.5 ? 44 : -44);
+    }
+    if (person.x < 60) { person.x = 60; person.angle = 0; }
+    if (person.x > WORLD.width - 60) { person.x = WORLD.width - 60; person.angle = Math.PI; }
+  } else {
+    person.y += Math.sin(person.angle) * step;
+    const road = nearestRoadY(person.y);
+    if (Math.abs(person.y - road) < 24 && random() < 0.02) {
+      person.angle = random() < 0.5 ? 0 : Math.PI;
+      person.x = nearestRoadX(person.x) + (random() < 0.5 ? 44 : -44);
+    }
+    if (person.y < 60) { person.y = 60; person.angle = Math.PI / 2; }
+    if (person.y > WORLD.height - 60) { person.y = WORLD.height - 60; person.angle = -Math.PI / 2; }
   }
-  if (!ped.target || Math.hypot(ped.target.x - ped.x, ped.target.y - ped.y) < 20) {
-    if (ped.state === 'flee' && danger) {
-      const away = Math.atan2(ped.y - danger.y, ped.x - danger.x);
-      ped.target = { x: ped.x + Math.cos(away) * 300, y: ped.y + Math.sin(away) * 300 };
-    } else {
-      ped.target = { x: ped.x + random.range(-260, 260), y: ped.y + random.range(-260, 260) };
+  resolveSolid(city, person, 8);
+}
+
+function stepChaser(person, target, speed, dt, city) {
+  const dx = target.x - person.x;
+  const dy = target.y - person.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1) return;
+  person.angle = Math.atan2(dy, dx);
+  person.x += (dx / dist) * speed * dt;
+  person.y += (dy / dist) * speed * dt;
+  resolveSolid(city, person, 10);
+}
+
+export function updatePeople(state, dt, city, random) {
+  // Foot cops live in state.cops and are driven by the world step, not here.
+  for (const person of state.people) {
+    if (person.kind === 'ped') {
+      dodgeCars(person, state, dt);
+      stepPedestrian(person, random, dt, city);
+    } else if (person.kind === 'vulture') {
+      // A Vulture defends its turf: it chases the player only while it is
+      // still close to where it spawned. Past the leash it walks back home,
+      // so a running fight cannot drag the gang across the map.
+      const fromHome = Math.hypot(person.x - person.homeX, person.y - person.homeY);
+      if (fromHome > 400) stepChaser(person, { x: person.homeX, y: person.homeY }, 120, dt, city);
+      else stepChaser(person, state.player, 120, dt, city);
     }
   }
-  const speed = ped.state === 'flee' ? PEDESTRIANS.fleeSpeed : ped.speed;
-  const angle = Math.atan2(ped.target.y - ped.y, ped.target.x - ped.x);
-  ped.angle = angle;
-  ped.x = Math.max(40, Math.min(WORLD.width - 40, ped.x + Math.cos(angle) * speed * dt));
-  ped.y = Math.max(40, Math.min(WORLD.height - 40, ped.y + Math.sin(angle) * speed * dt));
-}
-
-export function makeFootCop(random, x, y) {
-  return {
-    x, y, angle: 0, health: 60,
-    state: 'patrol',
-    target: null,
-    shootTimer: 0,
-    bustTimer: 0,
-  };
-}
-
-export function makeGangMember(random, x, y) {
-  return {
-    x, y, angle: 0, health: GANG.health,
-    state: 'guard',
-    target: null,
-    shootTimer: random.range(0, 1),
-    home: { x, y },
-  };
 }
 
 /**
- * The wanted level: crimes raise it, witnesses matter, and it fades when
- * nobody can see the player. Returns true when the level just changed.
+ * A pedestrian steps out of a car's path: when a car is bearing down on them
+ * from ahead, they move sideways off its line at a run. It keeps a fast drive
+ * along the roads from turning the sidewalks into a crime scene, while a driver
+ * who aims straight at someone can still catch them.
  */
-export function addWanted(state, stars, reason) {
-  const before = state.player.stars;
-  state.player.stars = Math.min(WANTED.maxStars, state.player.stars + stars);
-  state.player.lastCrime = state.time;
-  state.player.crimeLog.push({ reason, stars, at: Math.round(state.time) });
-  if (state.player.stars > before) {
-    state.events.push({ type: 'wanted', stars: state.player.stars, reason });
-    return true;
-  }
-  return false;
-}
-
-/** Decay the wanted level while the player stays out of sight. */
-export function decayWanted(state, dt) {
-  const p = state.player;
-  if (p.stars === 0) return;
-  const seen = state.cops.some((c) => Math.hypot(c.x - p.x, c.y - p.y) < WANTED.sightRadius)
-    || state.chaseCars.some((c) => Math.hypot(c.x - p.x, c.y - p.y) < WANTED.sightRadius);
-  if (seen) {
-    p.hiddenTimer = 0;
+function dodgeCars(person, state, dt) {
+  const cars = [];
+  if (state.player.inCar) cars.push(state.player.inCar);
+  for (const car of state.traffic) cars.push(car);
+  for (const car of cars) {
+    const dx = person.x - car.x;
+    const dy = person.y - car.y;
+    const ahead = dx * Math.cos(car.angle) + dy * Math.sin(car.angle);
+    if (ahead < 0 || ahead > 160) continue;
+    const side = dx * -Math.sin(car.angle) + dy * Math.cos(car.angle);
+    if (Math.abs(side) > 34) continue;
+    const s = side >= 0 ? 1 : -1;
+    person.x += -Math.sin(car.angle) * s * 220 * dt;
+    person.y += Math.cos(car.angle) * s * 220 * dt;
     return;
   }
-  p.hiddenTimer += dt;
-  if (p.hiddenTimer > WANTED.decaySeconds) {
-    p.stars = Math.max(0, p.stars - 1);
-    p.hiddenTimer = 0;
-    state.events.push({ type: 'wanted', stars: p.stars, reason: 'cooled off' });
-  }
 }
 
-/** How many chase cars the current wanted level calls for. */
-export function wantedChaseCount(stars) {
-  if (stars <= 0) return 0;
-  if (stars === 1) return 1;
-  if (stars === 2) return 2;
-  if (stars === 3) return 3;
-  if (stars === 4) return 4;
-  return WANTED.maxChaseCars;
-}
-
-/** Spawn a police car on the nearest road, already chasing the player. */
-export function spawnChaseCar(random, state) {
-  const p = state.player;
-  const road = nearestRoad(p.x, p.y);
-  const offset = 500;
-  const dir = random.chance(0.5) ? 1 : -1;
-  const car = makeCar(random, road.x, road.y, 0, {
-    police: true, color: '#1a1a22', model: 'Interceptor',
-    roadVertical: road.vertical, roadPos: road.vertical ? road.x : road.y, roadDir: dir,
+/** Spawn a foot cop on a road near the player. */
+export function spawnCop(state, random) {
+  const player = state.player;
+  const roadX = nearestRoadX(player.x + (random() < 0.5 ? -260 : 260));
+  const roadY = nearestRoadY(player.y + (random() < 0.5 ? -260 : 260));
+  const onVertical = random() < 0.5;
+  state.cops.push({
+    x: onVertical ? roadX : player.x + (random() < 0.5 ? -260 : 260),
+    y: onVertical ? player.y + (random() < 0.5 ? -260 : 260) : roadY,
+    angle: 0, speed: 180, kind: 'cop', health: 3, color: 'cop', contact: 0, giveUp: 0,
   });
-  if (road.vertical) {
-    car.y = Math.max(180, Math.min(1740, p.y + dir * offset));
-    car.angle = dir === 1 ? Math.PI / 2 : -Math.PI / 2;
-  } else {
-    car.x = Math.max(180, Math.min(2380, p.x + dir * offset));
-    car.angle = dir === 1 ? 0 : Math.PI;
-  }
-  car.siren = true;
-  car.cruise = POLICE.carSpeed;
-  state.chaseCars.push(car);
-  return car;
 }
 
-/** One chase-car step: steer toward the player, ram on contact. */
-export function stepChaseCar(car, dt, state) {
-  const p = state.player;
-  const tx = p.car ? p.car.x : p.x;
-  const ty = p.car ? p.car.y : p.y;
-  const want = Math.atan2(ty - car.y, tx - car.x);
-  let diff = want - car.angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  car.angle += Math.max(-2.6 * dt, Math.min(2.6 * dt, diff));
-  car.speed = Math.min(POLICE.carSpeed, car.speed + 420 * dt);
-  car.x += Math.cos(car.angle) * car.speed * dt;
-  car.y += Math.sin(car.angle) * car.speed * dt;
-  car.x = Math.max(60, Math.min(WORLD.width - 60, car.x));
-  car.y = Math.max(60, Math.min(WORLD.height - 60, car.y));
-  const probe = { x: car.x, y: car.y };
-  if (resolveBuildingCollision(state.city, probe, 26)) {
-    car.x = probe.x;
-    car.y = probe.y;
-    car.speed *= 0.4;
-    car.angle += 0.6;
+export function spawnVultures(state, random) {
+  // On the open ground south of the mall, never inside its walls: a Vulture
+  // inside the building could not be shot, and could not get out. Each one
+  // remembers where it spawned: the gang defends its turf and walks home
+  // once it has strayed too far, so a running fight cannot drag the whole
+  // gang across the map and strand the player at the far edge.
+  for (let i = 0; i < 8; i += 1) {
+    const x = 1420 + random() * 360;
+    const y = 1160 + random() * 50;
+    state.people.push({
+      x, y, homeX: x, homeY: y,
+      angle: random() * Math.PI * 2, speed: 120, kind: 'vulture', health: 3, color: 'vulture',
+      shootCooldown: 0.5 + random(),
+    });
   }
-  // Ram the player's car, or the player on foot.
-  const target = p.car ?? p;
-  const d = Math.hypot(target.x - car.x, target.y - car.y);
-  if (d < 44) {
-    if (p.car) {
-      p.car.health = Math.max(0, p.car.health - 6 * dt);
-      p.car.speed *= 0.96;
-    } else if (p.stars > 0) {
-      // A cop car touching the player on foot starts the bust.
-      state.bustTimer += dt;
-    }
-  }
-}
-
-/** One foot-cop step: patrol, chase, and try to bust the player. */
-export function stepFootCop(cop, dt, state) {
-  const p = state.player;
-  const d = Math.hypot(p.x - cop.x, p.y - cop.y);
-  if (p.stars > 0 && d < WANTED.sightRadius) {
-    cop.state = 'chase';
-  } else if (p.stars === 0) {
-    cop.state = 'patrol';
-  }
-  if (cop.state === 'chase') {
-    const angle = Math.atan2(p.y - cop.y, p.x - cop.x);
-    cop.angle = angle;
-    cop.x += Math.cos(angle) * POLICE.footSpeed * dt;
-    cop.y += Math.sin(angle) * POLICE.footSpeed * dt;
-    if (d < 26) {
-      cop.bustTimer += dt;
-      if (cop.bustTimer > WANTED.bustSeconds) state.flags.busted = true;
-    } else {
-      cop.bustTimer = 0;
-    }
-    // Cops open fire at three stars and up.
-    if (p.stars >= POLICE.shootAtStars && d < 420) {
-      cop.shootTimer -= dt;
-      if (cop.shootTimer <= 0) {
-        cop.shootTimer = POLICE.shootInterval;
-        state.bullets.push({
-          x: cop.x, y: cop.y,
-          vx: Math.cos(angle) * PLAYER.bulletSpeed,
-          vy: Math.sin(angle) * PLAYER.bulletSpeed,
-          from: 'police', damage: POLICE.bulletDamage, life: 0.8,
-        });
-        state.events.push({ type: 'shot', x: cop.x, y: cop.y });
-      }
-    }
-  } else {
-    if (!cop.target || Math.hypot(cop.target.x - cop.x, cop.target.y - cop.y) < 16) {
-      cop.target = { x: cop.x + (state.random.next() - 0.5) * 300, y: cop.y + (state.random.next() - 0.5) * 300 };
-    }
-    const angle = Math.atan2(cop.target.y - cop.y, cop.target.x - cop.x);
-    cop.angle = angle;
-    cop.x += Math.cos(angle) * 70 * dt;
-    cop.y += Math.sin(angle) * 70 * dt;
-  }
-  resolveBuildingCollision(state.city, cop, PLAYER.radius);
-}
-
-/** One gang member step: guard home turf, shoot the player on sight. */
-export function stepGangMember(g, dt, state) {
-  const p = state.player;
-  const d = Math.hypot(p.x - g.x, p.y - g.y);
-  if (d < 480) {
-    const angle = Math.atan2(p.y - g.y, p.x - g.x);
-    g.angle = angle;
-    // Strafe closer when far, hold ground when near.
-    if (d > 260) {
-      g.x += Math.cos(angle) * 90 * dt;
-      g.y += Math.sin(angle) * 90 * dt;
-    }
-    g.shootTimer -= dt;
-    if (g.shootTimer <= 0 && d < 420) {
-      g.shootTimer = GANG.shootInterval;
-      const spread = (state.random.next() - 0.5) * 0.3;
-      state.bullets.push({
-        x: g.x, y: g.y,
-        vx: Math.cos(angle + spread) * PLAYER.bulletSpeed,
-        vy: Math.sin(angle + spread) * PLAYER.bulletSpeed,
-        from: 'gang', damage: GANG.bulletDamage, life: 0.8,
-      });
-      state.events.push({ type: 'shot', x: g.x, y: g.y });
-    }
-  } else {
-    const home = Math.hypot(g.home.x - g.x, g.home.y - g.y);
-    if (home > 30) {
-      const angle = Math.atan2(g.home.y - g.y, g.home.x - g.x);
-      g.angle = angle;
-      g.x += Math.cos(angle) * 60 * dt;
-      g.y += Math.sin(angle) * 60 * dt;
-    }
-  }
-  resolveBuildingCollision(state.city, g, PLAYER.radius);
 }

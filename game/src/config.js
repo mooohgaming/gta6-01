@@ -1,116 +1,127 @@
-// Tuning and world constants for Solmar Bay. All distances are world units
-// (1 unit ~ 1 m); speeds are units per second; angles are radians.
-export const WORLD = {
-  width: 2560,
-  height: 1920,
-  // Road centre-lines every 320 units, roads 96 wide, blocks 224 square.
-  block: 320,
-  roadWidth: 96,
-  sidewalk: 14,
-};
+// Every tuning number and colour for Solmar Bay in one place. The world is a fixed
+// 2560x2080 city; the renderer shows a 1280x720 camera window of it, so no rule below
+// depends on the screen size. All simulation numbers are in world units and seconds.
 
+export const WORLD = { width: 2560, height: 2080 };
+
+export const VERTICAL_ROADS = [200, 600, 1000, 1400, 1800, 2200];
+export const HORIZONTAL_ROADS = [180, 520, 860, 1200, 1540, 1880];
+export const ROAD_HALF = 32;
+/** Buildings keep this much sidewalk clear of every road edge. */
+export const APRON = 22;
+/** The sand strip along the south edge of the map. */
+export const BEACH_Y = 1970;
+/** The water strip along the east edge of the map. */
+export const MARINA_X = 2440;
+
+/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
 export const STEP = 1 / 60;
 
 export const PLAYER = {
-  walkSpeed: 170,
-  runSpeed: 285,
-  radius: 13,
+  radius: 10,
+  walkSpeed: 220,
   health: 100,
-  punchDamage: 12,
-  bulletDamage: 34,
-  pistolAmmo: 12,
-  pistolReserve: 48,
-  reloadSeconds: 1.1,
-  fireInterval: 0.22,
-  bulletSpeed: 900,
-  bulletRange: 520,
 };
 
 export const CAR = {
+  radius: 16,
   accel: 420,
-  brake: 620,
+  brake: 700,
   reverseAccel: 260,
   maxSpeed: 560,
-  maxReverse: 160,
-  steerRate: 2.4,
-  grip: 3.2,
-  length: 54,
-  width: 26,
-  // Damage the car takes from a hard hit, and the speed that counts as hard.
-  damageSpeed: 260,
-  maxHealth: 100,
+  maxReverse: 220,
+  turnRate: 2.7,
+  drag: 0.55,
+  handbrakeDecel: 900,
 };
 
-export const TRAFFIC = {
-  count: 26,
-  speed: 130,
-  minGap: 90,
+export const TRAFFIC_SPEED = { min: 170, max: 260 };
+export const TRAFFIC_COUNT = 26;
+export const PARKED_COUNT = 11;
+export const PEOPLE_COUNT = 24;
+export const PICKUP_COUNT = 20;
+
+export const GUN = {
+  mag: 12,
+  reloadSeconds: 1.2,
+  fireInterval: 0.25,
+  bulletSpeed: 900,
+  bulletRange: 700,
+  bulletDamage: 1,
 };
 
-export const PEDESTRIANS = {
-  count: 34,
-  walkSpeed: 55,
-  fleeSpeed: 150,
+export const START_CASH = 120;
+export const BUSTED_FINE = 150;
+export const WASTED_BILL = 100;
+export const PICKUP_CASH = 25;
+
+/** Mission payouts, in order: cafe job, pizza run, Comet theft, losing the tail, turf war, heist. */
+export const MISSION_PAYOUTS = [120, 180, 300, 320, 460, 600];
+
+export const LANDMARKS = {
+  casino: { name: 'Golden Palm Casino', x: 390, y: 380, w: 180, h: 120 },
+  cafe: { name: "Mama Rosa's Cafe", x: 1160, y: 970, w: 210, h: 120 },
+  hospital: { name: 'Solmar General Hospital', x: 2000, y: 950, w: 200, h: 80 },
+  hq: { name: 'Bayview Police HQ', x: 390, y: 1290, w: 180, h: 80 },
+  mall: { name: 'Sunset Mall', x: 1600, y: 990, w: 240, h: 180 },
+  marina: { name: 'Marina Towers', x: 2350, y: 1700, w: 180, h: 160 },
+};
+
+/** Where busted and wasted players wake up. */
+export const RESPAWN = {
+  busted: { x: 390, y: 1370 },
+  wasted: { x: 2000, y: 1030 },
 };
 
 export const WANTED = {
-  maxStars: 5,
-  decaySeconds: 14,
-  // Stars at which each police response starts showing up.
-  footCopsAt: 1,
-  chaseCarsAt: 1,
-  roadblockAt: 3,
-  maxChaseCars: 6,
-  bustSeconds: 1.6,
-  // How far a witness must be to see a crime, and how far police see the player.
-  witnessRadius: 420,
-  sightRadius: 560,
+  sightRange: 550,
+  giveUpRange: 700,
+  giveUpSeconds: 12,
+  decayDelay: 10,
+  decaySeconds: 4,
+  maxCops: 5,
+  maxInterceptors: 3,
+  ramDamagePerSecond: 6,
 };
 
-export const POLICE = {
-  carSpeed: 520,
-  footSpeed: 200,
-  shootAtStars: 3,
-  shootInterval: 0.9,
-  bulletDamage: 9,
-  accuracy: 0.45,
+export const PALETTE = {
+  backdrop: '#0d1420',
+  grass: '#1d3a24',
+  sand: '#c9b183',
+  water: '#14506e',
+  road: '#2b2f38',
+  roadLine: '#d8c95a',
+  sidewalk: '#3a3f4a',
+  building: '#4a4f5e',
+  buildingRoof: '#5d6373',
+  casino: '#7a5c1e',
+  cafe: '#8a4b2d',
+  hospital: '#3d6b8a',
+  hq: '#33415e',
+  mall: '#5e4a7a',
+  marina: '#2d5e6b',
+  park: '#245c31',
+  tree: '#2f7a3d',
+  player: '#4fc3f7',
+  car: '#e8b23a',
+  traffic: '#b8bec9',
+  taxi: '#f2c94c',
+  comet: '#d92626',
+  interceptor: '#1c2733',
+  ped: '#d8d8d8',
+  vulture: '#8a2f2f',
+  cop: '#2b4a7a',
+  bullet: '#ffe08a',
+  enemyBullet: '#ff7a5c',
+  panel: '#1c2330',
+  text: '#eef1f5',
+  muted: '#8b93a3',
+  gold: '#f2c94c',
+  red: '#e5534b',
+  green: '#5ec97a',
 };
 
-export const GANG = {
-  count: 8,
-  health: 50,
-  shootInterval: 1.1,
-  bulletDamage: 7,
-  accuracy: 0.35,
-};
+export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
-export const MISSIONS = {
-  // Cash the player starts with, and the fine for getting busted.
-  startCash: 120,
-  bustFine: 150,
-  hospitalBill: 100,
-};
-
-// Sunset palette: warm sun-soaked Solmar Bay.
-export const COLORS = {
-  grass: '#7fae62',
-  grassDark: '#74a158',
-  sand: '#e8cf96',
-  water: '#2e7f9e',
-  waterDeep: '#256d8a',
-  road: '#3d3a38',
-  roadEdge: '#2e2b2a',
-  lane: '#e8d44d',
-  sidewalk: '#b9b2a4',
-  crosswalk: '#e8e4da',
-  roofA: '#c96f4a',
-  roofB: '#4a7a9e',
-  roofC: '#8a6fae',
-  roofD: '#b0493f',
-  roofE: '#4f8f6b',
-  roofF: '#d9a441',
-  buildingEdge: '#00000033',
-  park: '#5d9b4a',
-  tree: '#3f7d33',
-  treeDark: '#356b2b',
-};
+/** Where the save is kept between visits (this browser only). */
+export const SAVE_KEY = 'solmar-bay.save';

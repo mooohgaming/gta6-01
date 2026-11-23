@@ -1,140 +1,172 @@
-// Combat: bullets, punches, and pickups. Bullets fly straight until they
-// hit a building, a person, or a car; punches land on whatever is right in
-// front of the player.
-import { PLAYER } from './config.js';
-import { resolveBuildingCollision } from './city.js';
+// Combat: the player's pistol (a 12-round magazine, a reload, a fire rate) and the
+// bullets both sides fire. A bullet stops at the first thing it hits. Killing a
+// pedestrian is a crime; killing a cop is a bigger one; Vultures are fair game.
+import { GUN } from './config.js';
+import { pointInBuilding } from './city.js';
 
-export function fireBullet(state, x, y, angle, from, damage) {
+export function createGun() {
+  return { ammo: GUN.mag, mag: GUN.mag, reloading: false, reloadTimer: 0, cooldown: 0 };
+}
+
+export function startReload(gun) {
+  if (gun.reloading || gun.ammo === gun.mag) return;
+  gun.reloading = true;
+  gun.reloadTimer = GUN.reloadSeconds;
+}
+
+export function updateGun(gun, dt) {
+  if (gun.cooldown > 0) gun.cooldown -= dt;
+  if (!gun.reloading) return;
+  gun.reloadTimer -= dt;
+  if (gun.reloadTimer <= 0) {
+    gun.ammo = gun.mag;
+    gun.reloading = false;
+  }
+}
+
+/** Fire one round toward (aimX, aimY). Returns true when a bullet left the barrel. */
+export function tryShoot(state, aimX, aimY) {
+  const gun = state.gun;
+  if (gun.reloading) return false;
+  if (gun.ammo <= 0) {
+    startReload(gun);
+    return false;
+  }
+  if (gun.cooldown > 0) return false;
+  gun.ammo -= 1;
+  gun.cooldown = GUN.fireInterval;
+  const player = state.player;
+  let dx = aimX - player.x;
+  let dy = aimY - player.y;
+  let dist = Math.hypot(dx, dy);
+  if (dist < 1) {
+    // Aiming at your own feet means straight ahead.
+    dx = Math.cos(player.angle);
+    dy = Math.sin(player.angle);
+    dist = 1;
+  }
   state.bullets.push({
-    x, y,
-    vx: Math.cos(angle) * PLAYER.bulletSpeed,
-    vy: Math.sin(angle) * PLAYER.bulletSpeed,
-    from, damage, life: PLAYER.bulletRange / PLAYER.bulletSpeed,
+    x: player.x + (dx / dist) * 18,
+    y: player.y + (dy / dist) * 18,
+    vx: (dx / dist) * GUN.bulletSpeed,
+    vy: (dy / dist) * GUN.bulletSpeed,
+    life: GUN.bulletRange / GUN.bulletSpeed,
+    damage: GUN.bulletDamage,
+    from: 'player',
   });
-  state.particles.push({
-    x: x + Math.cos(angle) * 18, y: y + Math.sin(angle) * 18,
-    vx: 0, vy: 0, life: 0.08, maxLife: 0.08, color: '#ffd94d', size: 5, spark: true,
-  });
+  return true;
 }
 
-/** A punch: anything within arm's reach in front of the player takes a hit. */
-export function punch(state) {
-  const p = state.player;
-  const px = p.x + Math.cos(p.angle) * 26;
-  const py = p.y + Math.sin(p.angle) * 26;
-  const hit = (e, radius) => Math.hypot(e.x - px, e.y - py) < radius + 26;
-  for (const ped of state.peds) {
-    if (!ped.dead && hit(ped, 14)) {
-      ped.dead = true;
-      state.events.push({ type: 'pedDown', x: ped.x, y: ped.y });
-      return true;
-    }
+function hitPerson(list, bullet) {
+  for (let i = 0; i < list.length; i += 1) {
+    const person = list[i];
+    const dx = person.x - bullet.x;
+    const dy = person.y - bullet.y;
+    if (dx * dx + dy * dy < 15 * 15) return { person, index: i };
   }
-  for (const g of state.gang) {
-    if (g.health > 0 && hit(g, 14)) {
-      g.health -= PLAYER.punchDamage;
-      state.events.push({ type: 'hit', x: g.x, y: g.y });
-      return true;
-    }
-  }
-  for (const c of state.cops) {
-    if (c.health > 0 && hit(c, 14)) {
-      c.health -= PLAYER.punchDamage;
-      state.events.push({ type: 'hit', x: c.x, y: c.y });
-      return true;
-    }
-  }
-  return false;
+  return null;
 }
 
-/** Move every bullet and resolve what it hits. Returns nothing; events go on the state. */
-export function stepBullets(state, dt) {
-  const p = state.player;
-  for (const b of state.bullets) {
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
-    b.life -= dt;
-    if (b.life <= 0) continue;
-    const probe = { x: b.x, y: b.y };
-    if (resolveBuildingCollision(state.city, probe, 2)) {
-      b.life = 0;
-      state.particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.15, maxLife: 0.15, color: '#c9c2b4', size: 4, spark: true });
+/**
+ * Advance the player's bullets. Returns the kills that happened, so the world can
+ * charge the crimes: { ped: n, cop: n, vulture: n }.
+ */
+export function updateBullets(state, dt, city) {
+  const kills = { ped: 0, cop: 0, vulture: 0 };
+  const kept = [];
+  for (const bullet of state.bullets) {
+    bullet.x += bullet.vx * dt;
+    bullet.y += bullet.vy * dt;
+    bullet.life -= dt;
+    if (bullet.life <= 0) continue;
+    if (pointInBuilding(city, bullet.x, bullet.y)) continue;
+    const hitPeople = hitPerson(state.people, bullet);
+    const hitCops = hitPeople === null ? hitPerson(state.cops, bullet) : null;
+    const hit = hitPeople ?? hitCops;
+    if (hit === null) {
+      kept.push(bullet);
       continue;
     }
-    const hitPerson = (e, radius) => Math.hypot(e.x - b.x, e.y - b.y) < radius;
-    if (b.from === 'player') {
-      let done = false;
-      for (const g of state.gang) {
-        if (g.health > 0 && hitPerson(g, 15)) {
-          g.health -= b.damage;
-          b.life = 0;
-          state.events.push({ type: 'hit', x: g.x, y: g.y });
-          done = true;
-          break;
-        }
+    const person = hit.person;
+    person.health -= bullet.damage;
+    if (person.health <= 0) {
+      if (person.kind === 'ped') {
+        kills.ped += 1;
+        state.people.splice(hit.index, 1);
+      } else if (person.kind === 'vulture') {
+        kills.vulture += 1;
+        state.people.splice(hit.index, 1);
+      } else if (person.kind === 'cop') {
+        kills.cop += 1;
+        state.cops.splice(hit.index, 1);
       }
-      if (!done) {
-        for (const c of state.cops) {
-          if (c.health > 0 && hitPerson(c, 15)) {
-            c.health -= b.damage;
-            b.life = 0;
-            state.events.push({ type: 'hit', x: c.x, y: c.y });
-            done = true;
-            break;
-          }
-        }
-      }
-      if (!done) {
-        for (const ped of state.peds) {
-          if (!ped.dead && hitPerson(ped, 14)) {
-            ped.dead = true;
-            b.life = 0;
-            state.events.push({ type: 'pedDown', x: ped.x, y: ped.y });
-            done = true;
-            break;
-          }
-        }
-      }
-      if (!done) {
-        for (const car of state.cars) {
-          if (car !== p.car && hitPerson(car, 28)) {
-            car.health = Math.max(0, car.health - b.damage);
-            b.life = 0;
-            state.events.push({ type: 'hit', x: car.x, y: car.y });
-            break;
-          }
-        }
-      }
-    } else if ((b.from === 'police' || b.from === 'gang') && !p.car && hitPerson(p, 14)) {
-      p.health -= b.damage;
-      b.life = 0;
-      state.events.push({ type: 'playerHit' });
-    } else if ((b.from === 'police' || b.from === 'gang') && p.car && hitPerson(p.car, 28)) {
-      p.car.health = Math.max(0, p.car.health - b.damage);
-      b.life = 0;
-      state.events.push({ type: 'hit', x: p.car.x, y: p.car.y });
     }
   }
-  state.bullets = state.bullets.filter((b) => b.life > 0);
+  state.bullets = kept;
+  return kills;
 }
 
-/** Spawn a pickup: health, ammo, or cash. */
-export function spawnPickup(state, x, y, kind, amount) {
-  state.pickups.push({ x, y, kind, amount });
-}
-
-/** The player walks over a pickup: collect it. */
-export function collectPickups(state) {
-  const p = state.player;
-  for (const pk of state.pickups) {
-    if (pk.taken) continue;
-    if (Math.hypot(pk.x - p.x, pk.y - p.y) < 26) {
-      pk.taken = true;
-      if (pk.kind === 'health') p.health = Math.min(PLAYER.health, p.health + pk.amount);
-      else if (pk.kind === 'ammo') p.reserve += pk.amount;
-      else if (pk.kind === 'cash') p.cash += pk.amount;
-      state.events.push({ type: 'pickup', kind: pk.kind, x: pk.x, y: pk.y });
+/** Vultures and Interceptors shoot back when the player is close enough. */
+export function updateEnemyFire(state, dt, city, random) {
+  for (const vulture of state.people) {
+    if (vulture.kind !== 'vulture') continue;
+    vulture.shootCooldown -= dt;
+    const dist = Math.hypot(state.player.x - vulture.x, state.player.y - vulture.y);
+    if (vulture.shootCooldown <= 0 && dist < 450) {
+      vulture.shootCooldown = 1.4 + random() * 0.6;
+      fireEnemyBullet(state, vulture, 8, 0.12, random);
     }
   }
-  state.pickups = state.pickups.filter((pk) => !pk.taken);
+  for (const interceptor of state.interceptors) {
+    interceptor.shootCooldown -= dt;
+    const dist = Math.hypot(state.player.x - interceptor.x, state.player.y - interceptor.y);
+    if (interceptor.shootCooldown <= 0 && dist < 500 && state.player.wanted >= 3) {
+      interceptor.shootCooldown = 1.1 + random() * 0.5;
+      fireEnemyBullet(state, interceptor, 6, 0.18, random);
+    }
+  }
+}
+
+function fireEnemyBullet(state, shooter, damage, spread, random) {
+  const player = state.player;
+  // The miss spread comes from the seeded random, never the clock, so a replay
+  // of the same seed takes the same shots.
+  const angle = Math.atan2(player.y - shooter.y, player.x - shooter.x) + (random() - 0.5) * spread * 2;
+  state.enemyBullets.push({
+    x: shooter.x + Math.cos(angle) * 20,
+    y: shooter.y + Math.sin(angle) * 20,
+    vx: Math.cos(angle) * 760,
+    vy: Math.sin(angle) * 760,
+    life: 1.2,
+    damage,
+    from: shooter.kind,
+  });
+}
+
+/**
+ * Advance enemy bullets. Returns true when the player was hit down to zero health.
+ */
+export function updateEnemyBullets(state, dt, city) {
+  const player = state.player;
+  const kept = [];
+  for (const bullet of state.enemyBullets) {
+    bullet.x += bullet.vx * dt;
+    bullet.y += bullet.vy * dt;
+    bullet.life -= dt;
+    if (bullet.life <= 0) continue;
+    if (pointInBuilding(city, bullet.x, bullet.y)) continue;
+    const dx = player.x - bullet.x;
+    const dy = player.y - bullet.y;
+    if (dx * dx + dy * dy < 16 * 16) {
+      player.health -= bullet.damage;
+      if (player.health <= 0) {
+        player.health = 0;
+        state.over = 'wasted';
+      }
+      continue;
+    }
+    kept.push(bullet);
+  }
+  state.enemyBullets = kept;
+  return state.over === 'wasted';
 }

@@ -1,109 +1,114 @@
-// Keyboard and mouse. WASD or arrows move, Shift runs, E enters a car or
-// starts a job, Space or click confirms, P or Escape pauses, R reloads, F
-// punches, M mutes. The mouse aims the pistol.
+// Keyboard and pointer input. Held keys give the driving direction; one-shot
+// presses (start, pause, enter a car, shoot, reload, mute) are queued as bit
+// flags and taken once by the loop, so a press between two frames is never lost
+// and never counted twice. The mouse aims: its client position is converted to
+// world coordinates by the function the boot code supplies.
+
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
-export const ACTION_ENTER = 4;
-export const ACTION_PUNCH = 8;
-export const ACTION_RELOAD = 16;
-export const ACTION_MUTE = 32;
+export const ACTION_MUTE = 4;
+export const ACTION_NEWGAME = 8;
 
-const KEYS = {
-  KeyW: 'up', ArrowUp: 'up',
-  KeyS: 'down', ArrowDown: 'down',
-  KeyA: 'left', ArrowLeft: 'left',
-  KeyD: 'right', ArrowRight: 'right',
-  ShiftLeft: 'run', ShiftRight: 'run',
-};
+const UP = new Set(['ArrowUp', 'KeyW']);
+const DOWN = new Set(['ArrowDown', 'KeyS']);
+const LEFT = new Set(['ArrowLeft', 'KeyA']);
+const RIGHT = new Set(['ArrowRight', 'KeyD']);
+const CONFIRM = new Set(['Space', 'Enter']);
+const PAUSE = new Set(['KeyP', 'Escape']);
 
-export function createInput(canvas) {
-  const held = new Set();
-  const pressed = new Set();
-  const mouse = { x: 0, y: 0, down: false, clicked: false, moved: false };
+export function createInput(target, toWorld) {
+  let up = false;
+  let down = false;
+  let left = false;
+  let right = false;
+  let handbrake = false;
   let actions = 0;
+  let enterPressed = false;
+  let shootPressed = false;
+  let reloadPressed = false;
+  let mouseX = 0;
+  let mouseY = 0;
+  let mouseDown = false;
 
-  function onKeyDown(e) {
-    if (e.repeat) return;
-    held.add(e.code);
-    pressed.add(e.code);
-    if (e.code === 'Space' || e.code === 'Enter') {
-      actions |= ACTION_CONFIRM;
-      e.preventDefault();
-    }
-    if (e.code === 'KeyP' || e.code === 'Escape') actions |= ACTION_PAUSE;
-    if (e.code === 'KeyE') actions |= ACTION_ENTER;
-    if (e.code === 'KeyF') actions |= ACTION_PUNCH;
-    if (e.code === 'KeyR') actions |= ACTION_RELOAD;
-    if (e.code === 'KeyM') actions |= ACTION_MUTE;
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-  }
-
-  function onKeyUp(e) {
-    held.delete(e.code);
-  }
-
-  function onMouseMove(e) {
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = e.clientX - rect.left;
-    mouse.y = e.clientY - rect.top;
-    mouse.moved = true;
-  }
-
-  function onMouseDown(e) {
-    onMouseMove(e);
-    mouse.down = true;
-    mouse.clicked = true;
-  }
-
-  function onMouseUp() {
-    mouse.down = false;
-  }
-
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mousedown', onMouseDown);
-  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('keydown', (event) => {
+    if (UP.has(event.code)) up = true;
+    else if (DOWN.has(event.code)) down = true;
+    else if (LEFT.has(event.code)) left = true;
+    else if (RIGHT.has(event.code)) right = true;
+    else if (event.code === 'Space') {
+      handbrake = true;
+      if (!event.repeat) actions |= ACTION_CONFIRM;
+    } else if (CONFIRM.has(event.code)) {
+      if (!event.repeat) actions |= ACTION_CONFIRM;
+    } else if (PAUSE.has(event.code)) {
+      if (!event.repeat) actions |= ACTION_PAUSE;
+    } else if (event.code === 'KeyE') {
+      if (!event.repeat) enterPressed = true;
+    } else if (event.code === 'KeyF') {
+      if (!event.repeat) shootPressed = true;
+    } else if (event.code === 'KeyR') {
+      if (!event.repeat) reloadPressed = true;
+    } else if (event.code === 'KeyM') {
+      if (!event.repeat) actions |= ACTION_MUTE;
+    } else if (event.code === 'KeyN') {
+      if (!event.repeat) actions |= ACTION_NEWGAME;
+    } else return;
+    event.preventDefault();
+  });
+  window.addEventListener('keyup', (event) => {
+    if (UP.has(event.code)) up = false;
+    else if (DOWN.has(event.code)) down = false;
+    else if (LEFT.has(event.code)) left = false;
+    else if (RIGHT.has(event.code)) right = false;
+    else if (event.code === 'Space') handbrake = false;
+  });
+  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
+  window.addEventListener('blur', () => {
+    up = false;
+    down = false;
+    left = false;
+    right = false;
+    handbrake = false;
+    mouseDown = false;
+  });
+  target.addEventListener('pointermove', (event) => {
+    mouseX = event.clientX;
+    mouseY = event.clientY;
+  });
+  target.addEventListener('pointerdown', (event) => {
+    mouseX = event.clientX;
+    mouseY = event.clientY;
+    mouseDown = true;
+    actions |= ACTION_CONFIRM;
+  });
+  window.addEventListener('pointerup', () => {
+    mouseDown = false;
+  });
 
   return {
-    mouse,
-    direction() {
-      return {
-        up: held.has('KeyW') || held.has('ArrowUp'),
-        down: held.has('KeyS') || held.has('ArrowDown'),
-        left: held.has('KeyA') || held.has('ArrowLeft'),
-        right: held.has('KeyD') || held.has('ArrowRight'),
-        run: held.has('ShiftLeft') || held.has('ShiftRight'),
+    /**
+     * The input for one fixed step. One-shot presses are consumed here, so a
+     * frame that runs several steps only fires them once.
+     */
+    state() {
+      const aim = toWorld(mouseX, mouseY);
+      const input = {
+        up, down, left, right, handbrake,
+        enter: enterPressed,
+        shoot: shootPressed || mouseDown,
+        reload: reloadPressed,
+        aimX: aim.x, aimY: aim.y, aimActive: true,
       };
+      enterPressed = false;
+      shootPressed = false;
+      reloadPressed = false;
+      return input;
     },
-    /** Directions in the same shape the world step takes. Aim follows the mouse only once it has moved. */
-    read() {
-      const d = this.direction();
-      return {
-        up: d.up, down: d.down, left: d.left, right: d.right, run: d.run,
-        shoot: mouse.down,
-        aimX: mouse.moved ? mouse.x : undefined,
-        aimY: mouse.moved ? mouse.y : undefined,
-      };
-    },
+    /** The one-shot actions since the last call, as ACTION_* flags. */
     takeActions() {
-      const a = actions;
+      const taken = actions;
       actions = 0;
-      if (mouse.clicked) {
-        mouse.clicked = false;
-        return a | ACTION_CONFIRM;
-      }
-      return a;
-    },
-    consumePress(code) {
-      if (pressed.has(code)) {
-        pressed.delete(code);
-        return true;
-      }
-      return false;
-    },
-    clearPresses() {
-      pressed.clear();
+      return taken;
     },
   };
 }
