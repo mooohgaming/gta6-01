@@ -1,98 +1,91 @@
-// Synthesised sound: no audio files, everything comes from the Web Audio API.
-// The context is created lazily on the first user gesture, so loading the page
-// never needs permission, and every call is guarded so a browser without audio
-// simply stays silent.
+// Synthesized sound: no audio files. An engine hum that follows the car's
+// speed, a gunshot, a pickup blip, a mission jingle and the busted/wasted
+// stings — all from one WebAudio graph, created on the first user gesture.
+
 export function createAudio() {
   let context = null;
-  let master = null;
-  let engineOsc = null;
+  let engine = null;
   let engineGain = null;
   let muted = false;
 
   function ensure() {
     if (context) return true;
     try {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextClass) return false;
-      context = new AudioContextClass();
-      master = context.createGain();
-      master.gain.value = muted ? 0 : 0.35;
-      master.connect(context.destination);
-      engineOsc = context.createOscillator();
-      engineOsc.type = 'sawtooth';
-      engineOsc.frequency.value = 55;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return false;
+      context = new AC();
+      engine = context.createOscillator();
+      engine.type = 'sawtooth';
+      engine.frequency.value = 55;
       engineGain = context.createGain();
       engineGain.gain.value = 0;
-      engineOsc.connect(engineGain);
-      engineGain.connect(master);
-      engineOsc.start();
+      const filter = context.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 320;
+      engine.connect(filter);
+      filter.connect(engineGain);
+      engineGain.connect(context.destination);
+      engine.start();
       return true;
     } catch {
       return false;
     }
   }
 
-  function tone(freq, duration, type, volume, slideTo) {
-    if (!ensure() || muted) return;
+  function blip(frequency, duration, type, volume, when = 0) {
+    if (!context || muted) return;
     try {
       const osc = context.createOscillator();
-      osc.type = type || 'sine';
-      osc.frequency.value = freq;
-      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, context.currentTime + duration);
+      const gain = context.createGain();
+      osc.type = type;
+      osc.frequency.value = frequency;
+      gain.gain.setValueAtTime(volume, context.currentTime + when);
+      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + when + duration);
+      osc.connect(gain);
+      gain.connect(context.destination);
+      osc.start(context.currentTime + when);
+      osc.stop(context.currentTime + when + duration);
+    } catch {
+      // Sound is garnish: never let it break the game.
+    }
+  }
+
+  function noise(duration, volume) {
+    if (!context || muted) return;
+    try {
+      const length = Math.floor(context.sampleRate * duration);
+      const buffer = context.createBuffer(1, length, context.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
       const gain = context.createGain();
       gain.gain.value = volume;
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration);
-      osc.connect(gain);
-      gain.connect(master);
-      osc.start();
-      osc.stop(context.currentTime + duration);
+      source.connect(gain);
+      gain.connect(context.destination);
+      source.start();
     } catch {
-      // Silence is always an acceptable fallback.
+      // Sound is garnish: never let it break the game.
     }
   }
 
   return {
-    /** Call on the first user gesture so the context is allowed to start. */
-    unlock() {
-      ensure();
-      if (context && context.state === 'suspended') context.resume().catch(() => {});
+    unlock() { ensure(); if (context && context.state === 'suspended') context.resume().catch(() => {}); },
+    setEngine(speed, inCar) {
+      if (!context || muted || !engineGain) return;
+      const target = inCar ? 0.02 + Math.abs(speed) / 560 * 0.05 : 0;
+      engineGain.gain.setTargetAtTime(target, context.currentTime, 0.1);
+      engine.frequency.setTargetAtTime(55 + Math.abs(speed) * 0.12, context.currentTime, 0.1);
     },
-    /** The engine hum follows the car's speed, 0 for parked. */
-    setEngine(speedRatio) {
-      if (!context || muted) return;
-      try {
-        engineOsc.frequency.value = 50 + speedRatio * 95;
-        engineGain.gain.value = speedRatio > 0.02 ? 0.02 + speedRatio * 0.045 : 0;
-      } catch {
-        // Ignore.
-      }
-    },
-    shoot() {
-      tone(180, 0.12, 'square', 0.18, 60);
-    },
-    pickup() {
-      tone(880, 0.09, 'sine', 0.16);
-      tone(1320, 0.12, 'sine', 0.12);
-    },
-    mission() {
-      tone(523, 0.12, 'sine', 0.18);
-      setTimeout(() => tone(659, 0.12, 'sine', 0.18), 110);
-      setTimeout(() => tone(784, 0.22, 'sine', 0.2), 220);
-    },
-    busted() {
-      tone(220, 0.4, 'sawtooth', 0.16, 110);
-    },
-    /** One wail of the siren, called on a timer while the player is wanted. */
-    sirenTick() {
-      tone(660, 0.28, 'sine', 0.1, 880);
-      setTimeout(() => tone(880, 0.28, 'sine', 0.1, 660), 300);
-    },
+    shot() { noise(0.12, 0.25); blip(180, 0.08, 'square', 0.12); },
+    enemyShot() { noise(0.1, 0.08); },
+    pickup() { blip(880, 0.12, 'sine', 0.16); blip(1320, 0.14, 'sine', 0.12, 0.07); },
+    mission() { blip(523, 0.14, 'triangle', 0.2); blip(659, 0.14, 'triangle', 0.2, 0.12); blip(784, 0.24, 'triangle', 0.22, 0.24); },
+    busted() { blip(330, 0.2, 'sawtooth', 0.16); blip(262, 0.34, 'sawtooth', 0.16, 0.18); },
+    wasted() { blip(220, 0.3, 'sawtooth', 0.16); blip(165, 0.5, 'sawtooth', 0.16, 0.26); },
     toggleMute() {
       muted = !muted;
-      if (master) master.gain.value = muted ? 0 : 0.35;
-      return muted;
-    },
-    get muted() {
+      if (engineGain) engineGain.gain.value = 0;
       return muted;
     },
   };

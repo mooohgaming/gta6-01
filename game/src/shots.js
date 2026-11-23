@@ -1,111 +1,88 @@
-// The screenshot scenes behind ?shot=downtown|chase|beach|cafe. Each one plays the
-// real rules forward from a fresh world for a fixed number of steps, so the frame
-// is what a short game really looks like and the same seed always gives the same
-// frame. The driving scenes use a simple autopilot: steer at the next waypoint
-// and slow to town speed within 220 units of it, so the car corners cleanly
-// instead of swinging wide off the road.
-import { STEP } from './config.js';
+// The screenshot scenes behind ?shot=downtown|chase|beach|cafe. Each one plays
+// the real rules forward from a fresh world for a fixed number of steps,
+// steered by a simple waypoint autopilot, so the frame is what a short game
+// really looks like and the same seed always gives the same frame. The camera
+// is fixed per scene, so the framing is repeatable too.
 
-const EMPTY = { up: false, down: false, left: false, right: false, handbrake: false, enter: false, shoot: false, reload: false, aimX: 0, aimY: 0, aimActive: false };
+import { LANDMARKS, STEP } from './config.js';
+import { autopilotDrive } from './vehicles.js';
+import { SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 
-const DOWNTOWN_LOOP = [
-  { x: 1400, y: 1200 }, { x: 1400, y: 520 }, { x: 600, y: 520 }, { x: 600, y: 1200 },
-  { x: 1000, y: 1200 }, { x: 1000, y: 860 }, { x: 1800, y: 860 }, { x: 1800, y: 1540 },
-  { x: 1000, y: 1540 }, { x: 1000, y: 1200 },
-];
+const SCENES = {
+  downtown: { seconds: 6, screen: SCREEN_TITLE, camera: { x: 700, y: 700 } },
+  chase: { seconds: 9, screen: SCREEN_PLAY, camera: null },
+  beach: { seconds: 7, screen: SCREEN_PLAY, camera: null },
+  cafe: { seconds: 4, screen: SCREEN_PLAY, camera: { x: 1160, y: 1080 } },
+};
 
-function autopilotInput(world, waypoint) {
-  const player = world.state.player;
-  const dx = waypoint.x - player.x;
-  const dy = waypoint.y - player.y;
-  const dist = Math.hypot(dx, dy);
-  const want = Math.atan2(dy, dx);
-  let diff = want - player.angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const desired = dist < 220 ? 110 : 560;
-  const speed = Math.abs(player.speed);
-  return {
-    up: speed < desired && (Math.abs(diff) < 0.9 || speed < 100),
-    down: speed > desired + 40 || (Math.abs(diff) > 1.2 && speed > 200),
-    left: diff < -0.08,
-    right: diff > 0.08,
-    handbrake: false, enter: false, shoot: false, reload: false, aimX: 0, aimY: 0, aimActive: false,
-  };
-}
-
-/** Put the player in the parked car nearest to a point. */
-function takeNearestCar(world, x, y) {
-  const state = world.state;
-  let best = null;
-  let bestDist = Infinity;
-  for (const car of state.parked) {
-    const dist = Math.hypot(car.x - x, car.y - y);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = car;
-    }
-  }
-  if (!best) return;
-  best.driven = true;
-  state.player.inCar = best;
-  state.player.onFoot = false;
-  state.player.x = best.x;
-  state.player.y = best.y;
-  state.player.angle = best.angle;
-  state.player.speed = 0;
-}
-
-function driveLoop(world, waypoints, seconds) {
+/** Drive a car through waypoints in order, looping, like the test driver. */
+function driveRoute(world, waypoints, seconds) {
   let leg = 0;
   const steps = Math.floor(seconds / STEP);
   for (let i = 0; i < steps; i += 1) {
-    if (world.state.over) return;
-    const player = world.state.player;
+    const car = world.state.player.inCar;
+    if (!car) break;
     const target = waypoints[leg];
-    if (Math.hypot(target.x - player.x, target.y - player.y) < 60) {
-      leg = (leg + 1) % waypoints.length;
-      continue;
-    }
-    world.step(STEP, autopilotInput(world, waypoints[leg]));
+    if (Math.hypot(target.x - car.x, target.y - car.y) < 90) leg = (leg + 1) % waypoints.length;
+    autopilotDrive(car, waypoints[leg].x, waypoints[leg].y, STEP, world.state.city);
+    world.step(STEP, {});
+    if (world.state.over) break;
   }
 }
 
+function putInCar(world, x, y) {
+  const player = world.state.player;
+  const car = world.state.parked.find((c) => !c.taken && Math.hypot(c.x - x, c.y - y) < 400)
+    ?? world.state.parked.find((c) => !c.taken);
+  if (!car) return false;
+  player.x = car.x;
+  player.y = car.y;
+  car.taken = true;
+  player.inCar = car;
+  player.onFoot = false;
+  player.angle = car.angle;
+  player.speed = 0;
+  player.radius = 21;
+  return true;
+}
+
 /**
- * Set `world` to the named scene and return the screen to draw over it.
- * Any name other than the four is downtown.
+ * Set `world` to the named scene (downtown, chase, beach or cafe; any other
+ * name is downtown) and return the screen to draw over it.
  */
 export function stageShot(name, world) {
+  const scene = SCENES[name] ?? SCENES.downtown;
   world.reset();
+  if (name === 'downtown') {
+    // A living city behind the title: traffic rolling, pedestrians out.
+    for (let i = 0; i < scene.seconds / STEP; i += 1) world.step(STEP, {});
+    world.state.camera = scene.camera;
+    return { screen: scene.screen };
+  }
   if (name === 'chase') {
-    takeNearestCar(world, 1400, 1200);
+    // Three stars, Interceptors on the tail, cutting through downtown.
+    putInCar(world, 600, 520);
     world.crime(3);
-    driveLoop(world, DOWNTOWN_LOOP, 12);
-    return { screen: 'play' };
+    driveRoute(world, [
+      { x: 200, y: 180 }, { x: 2200, y: 180 }, { x: 2200, y: 860 },
+      { x: 600, y: 860 }, { x: 600, y: 520 }, { x: 1400, y: 520 },
+    ], scene.seconds);
+    world.state.camera = { x: world.state.player.x, y: world.state.player.y };
+    return { screen: scene.screen };
   }
   if (name === 'beach') {
-    const car = world.state.parked[0];
-    car.x = 1350;
-    car.y = 2010;
-    car.angle = 0;
-    world.state.player.x = 1280;
-    world.state.player.y = 2010;
-    world.state.player.angle = Math.PI / 2;
-    for (let i = 0; i < 3 / STEP; i += 1) world.step(STEP, EMPTY);
-    return { screen: 'play' };
+    // A cruise down the beach road toward the marina towers.
+    putInCar(world, 2200, 180);
+    driveRoute(world, [
+      { x: 2200, y: 1880 }, { x: 2200, y: 1000 }, { x: 1800, y: 1000 },
+    ], scene.seconds);
+    world.state.camera = { x: world.state.player.x, y: world.state.player.y };
+    return { screen: scene.screen };
   }
-  if (name === 'cafe') {
-    const car = world.state.parked[0];
-    car.x = 1260;
-    car.y = 1140;
-    car.angle = 0;
-    world.state.player.x = 1160;
-    world.state.player.y = 1150;
-    world.state.player.angle = -Math.PI / 2;
-    for (let i = 0; i < 3 / STEP; i += 1) world.step(STEP, EMPTY);
-    return { screen: 'play' };
-  }
-  takeNearestCar(world, 1400, 1200);
-  driveLoop(world, DOWNTOWN_LOOP, 25);
-  return { screen: 'play' };
+  // cafe: on foot outside Mama Rosa's, the safehouse of the story.
+  world.state.player.x = LANDMARKS.cafe.x;
+  world.state.player.y = LANDMARKS.cafe.y + 60;
+  for (let i = 0; i < scene.seconds / STEP; i += 1) world.step(STEP, {});
+  world.state.camera = scene.camera;
+  return { screen: scene.screen };
 }

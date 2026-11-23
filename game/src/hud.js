@@ -1,109 +1,124 @@
-// The HUD and the live minimap, drawn in the 1280x720 screen space after the
-// world. Cash, wanted stars, health, ammo and the current objective; the minimap
-// shows the whole city, the player, the law and the mission target.
-import { PALETTE } from './config.js';
-import { missionTarget, missionText } from './missions.js';
+// The HUD: cash and the current mission, wanted stars, health and ammo, and
+// the live minimap — the whole city at a glance, with the player, the law
+// and the mission marker on it.
 
-const VIEW_W = 1280;
-const VIEW_H = 720;
-const MAP_W = 220;
-const MAP_H = 176;
-const MAP_X = VIEW_W - MAP_W - 16;
-const MAP_Y = VIEW_H - MAP_H - 16;
+import { CITY, FONT, HORIZONTAL, LANDMARKS, PALETTE, VERTICAL } from './config.js';
+import { MISSION_DEFS } from './missions.js';
 
-function stars(wanted) {
-  let out = '';
-  for (let i = 0; i < 5; i += 1) out += i < wanted ? '★' : '☆';
-  return out;
-}
+const MAP = { w: 216, h: 176 };
 
-export function drawHud(ctx, state, screen) {
+export function drawHud(ctx, state, viewW, viewH) {
+  const player = state.player;
+  const runner = state.missions.runner;
   ctx.textBaseline = 'top';
-  // Cash, top left.
-  ctx.font = 'bold 30px system-ui, sans-serif';
-  ctx.fillStyle = PALETTE.gold;
+
+  // Cash and mission, top left.
+  ctx.fillStyle = 'rgba(13, 21, 38, 0.72)';
+  ctx.fillRect(14, 14, 340, 78);
+  ctx.fillStyle = PALETTE.cash;
+  ctx.font = `700 26px ${FONT}`;
   ctx.textAlign = 'left';
-  ctx.fillText(`$${state.player.cash}`, 20, 14);
-  // Wanted stars, top centre.
-  ctx.font = '30px system-ui, sans-serif';
-  ctx.fillStyle = state.player.wanted > 0 ? PALETTE.red : PALETTE.muted;
-  ctx.textAlign = 'center';
-  ctx.fillText(stars(state.player.wanted), VIEW_W / 2, 14);
-  // Health bar, top right.
-  const barX = VIEW_W - 220;
-  ctx.fillStyle = '#10151f';
-  ctx.fillRect(barX, 18, 200, 18);
-  ctx.fillStyle = state.player.health > 40 ? PALETTE.green : PALETTE.red;
-  ctx.fillRect(barX, 18, Math.max(0, 200 * (state.player.health / 100)), 18);
-  ctx.font = '16px system-ui, sans-serif';
+  ctx.fillText(`$${player.cash.toLocaleString('en-US')}`, 28, 22);
   ctx.fillStyle = PALETTE.text;
+  ctx.font = `600 15px ${FONT}`;
+  const mission = runner.done ? 'Story complete' : `${runner.index + 1}. ${MISSION_DEFS[runner.index].name}`;
+  ctx.fillText(mission, 28, 52);
+  ctx.fillStyle = PALETTE.muted;
+  ctx.font = `13px ${FONT}`;
+  const objective = runner.done ? 'Solmar Bay is yours.' : MISSION_DEFS[runner.index].text;
+  ctx.fillText(objective, 28, 72);
+
+  // Wanted stars, top right (left of the minimap).
   ctx.textAlign = 'right';
-  ctx.fillText(`HP ${Math.ceil(state.player.health)}`, barX - 10, 18);
-  // Ammo, under the health bar.
-  ctx.font = '20px system-ui, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillStyle = state.gun.reloading ? PALETTE.red : PALETTE.text;
-  ctx.fillText(state.gun.reloading ? 'RELOADING…' : `AMMO ${state.gun.ammo} / ${state.gun.mag}`, VIEW_W - 20, 44);
-  // Mission line, bottom left.
-  ctx.font = '20px system-ui, sans-serif';
-  ctx.fillStyle = PALETTE.text;
-  ctx.textAlign = 'left';
-  ctx.fillText(missionText(state), 20, VIEW_H - 32);
-  // Speed, bottom centre, while driving.
-  if (state.player.inCar) {
-    ctx.font = 'bold 26px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = PALETTE.text;
-    ctx.fillText(`${Math.round(Math.abs(state.player.speed) * 0.36)} km/h`, VIEW_W / 2, VIEW_H - 34);
+  ctx.font = `26px ${FONT}`;
+  for (let i = 0; i < 5; i += 1) {
+    ctx.fillStyle = i < player.wanted ? PALETTE.star : 'rgba(238, 241, 245, 0.22)';
+    ctx.fillText('★', viewW - MAP.w - 34 - i * 30, 20);
   }
-  drawMinimap(ctx, state);
+
+  // Health and ammo, bottom left.
+  ctx.fillStyle = 'rgba(13, 21, 38, 0.72)';
+  ctx.fillRect(14, viewH - 64, 280, 50);
+  ctx.fillStyle = PALETTE.muted;
+  ctx.font = `600 13px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.fillText('HEALTH', 28, viewH - 56);
+  ctx.fillStyle = '#3a4356';
+  ctx.fillRect(28, viewH - 36, 150, 12);
+  ctx.fillStyle = player.health > 35 ? PALETTE.cash : PALETTE.health;
+  ctx.fillRect(28, viewH - 36, 150 * (player.health / 100), 12);
+  ctx.fillStyle = PALETTE.text;
+  ctx.font = `600 15px ${FONT}`;
+  ctx.fillText(player.inCar ? 'IN CAR' : 'ON FOOT', 196, viewH - 52);
+  ctx.fillStyle = PALETTE.ammo;
+  ctx.fillText(`◉ ${state.gun.ammo}/12${state.gun.reloading ? ' …' : ''}`, 196, viewH - 30);
+
+  drawMinimap(ctx, state, viewW, viewH);
 }
 
-function drawMinimap(ctx, state) {
-  const scaleX = MAP_W / 2560;
-  const scaleY = MAP_H / 2080;
-  ctx.fillStyle = 'rgba(10, 14, 22, 0.85)';
-  ctx.fillRect(MAP_X, MAP_Y, MAP_W, MAP_H);
-  ctx.strokeStyle = PALETTE.muted;
-  ctx.strokeRect(MAP_X, MAP_Y, MAP_W, MAP_H);
-  const px = (x) => MAP_X + x * scaleX;
-  const py = (y) => MAP_Y + y * scaleY;
+function drawMinimap(ctx, state, viewW, viewH) {
+  const x0 = viewW - MAP.w - 14;
+  const y0 = 54;
+  const sx = MAP.w / CITY.width;
+  const sy = MAP.h / CITY.height;
+  ctx.fillStyle = 'rgba(13, 21, 38, 0.78)';
+  ctx.fillRect(x0 - 6, y0 - 6, MAP.w + 12, MAP.h + 12);
+  ctx.fillStyle = PALETTE.grass;
+  ctx.fillRect(x0, y0, MAP.w, MAP.h);
+  // Water on the east edge.
+  ctx.fillStyle = PALETTE.water;
+  ctx.fillRect(x0 + 2440 * sx, y0, MAP.w - 2440 * sx, MAP.h);
   // Roads.
-  ctx.fillStyle = '#3a3f4a';
-  for (const road of [200, 600, 1000, 1400, 1800, 2200]) ctx.fillRect(px(road - 32), MAP_Y, 64 * scaleX, MAP_H);
-  for (const road of [180, 520, 860, 1200, 1540, 1880]) ctx.fillRect(MAP_X, py(road - 32), MAP_W, 64 * scaleY);
-  // Buildings.
-  ctx.fillStyle = '#6a7080';
-  for (const rect of state.city.buildings) {
-    ctx.fillRect(px(rect.x), py(rect.y), Math.max(1, rect.w * scaleX), Math.max(1, rect.h * scaleY));
-  }
-  // Mission target.
-  const target = missionTarget(state);
-  if (target) {
-    ctx.fillStyle = PALETTE.gold;
+  ctx.strokeStyle = PALETTE.road;
+  ctx.lineWidth = 2;
+  for (const vx of VERTICAL) {
     ctx.beginPath();
-    ctx.arc(px(target.x), py(target.y), 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = PALETTE.gold;
-    ctx.beginPath();
-    ctx.arc(px(target.x), py(target.y), 9, 0, Math.PI * 2);
+    ctx.moveTo(x0 + vx * sx, y0);
+    ctx.lineTo(x0 + vx * sx, y0 + MAP.h);
     ctx.stroke();
   }
-  // The law.
-  ctx.fillStyle = '#4a90e2';
-  for (const cop of state.cops) {
-    ctx.fillRect(px(cop.x) - 2, py(cop.y) - 2, 4, 4);
+  for (const hy of HORIZONTAL) {
+    ctx.beginPath();
+    ctx.moveTo(x0, y0 + hy * sy);
+    ctx.lineTo(x0 + MAP.w, y0 + hy * sy);
+    ctx.stroke();
   }
-  for (const car of state.interceptors) {
-    ctx.fillRect(px(car.x) - 2, py(car.y) - 2, 4, 4);
+  // Landmarks.
+  ctx.fillStyle = PALETTE.landmark;
+  for (const key of Object.keys(LANDMARKS)) {
+    const lm = LANDMARKS[key];
+    ctx.fillRect(x0 + lm.x * sx - 2, y0 + lm.y * sy - 2, 4, 4);
   }
-  // The player.
-  ctx.fillStyle = PALETTE.player;
+  // The mission target pulses.
+  const runner = state.missions.runner;
+  if (!runner.done) {
+    const def = MISSION_DEFS[runner.index];
+    const stage = def.stages[runner.stage];
+    const target = stage.target ?? (stage.clearVultures ? { x: LANDMARKS.mall.x, y: LANDMARKS.mall.y } : null);
+    if (target) {
+      const pulse = 3 + Math.sin(state.time * 4) * 1.5;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x0 + target.x * sx, y0 + target.y * sy, pulse + 3, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(x0 + target.x * sx, y0 + target.y * sy, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  // Cops and interceptors, then the player on top.
+  ctx.fillStyle = PALETTE.cop;
+  for (const cop of state.cops) ctx.fillRect(x0 + cop.x * sx - 1.5, y0 + cop.y * sy - 1.5, 3, 3);
+  for (const car of state.interceptors) ctx.fillRect(x0 + car.x * sx - 1.5, y0 + car.y * sy - 1.5, 3, 3);
+  ctx.fillStyle = '#ffffff';
   ctx.beginPath();
-  ctx.arc(px(state.player.x), py(state.player.y), 4, 0, Math.PI * 2);
+  ctx.arc(x0 + state.player.x * sx, y0 + state.player.y * sy, 3.5, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = PALETTE.text;
+  ctx.strokeStyle = PALETTE.player;
+  ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.arc(px(state.player.x), py(state.player.y), 6, 0, Math.PI * 2);
+  ctx.arc(x0 + state.player.x * sx, y0 + state.player.y * sy, 5.5, 0, Math.PI * 2);
   ctx.stroke();
 }

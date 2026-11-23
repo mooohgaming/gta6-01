@@ -1,194 +1,117 @@
-// The cars of Solmar Bay: 26 traffic cars driving the road grid, 11 parked cars
-// (one of them the red Comet GT), and the arcade physics of the car the player
-// drives. Traffic stays on road centres and turns only at intersections, so it
-// never needs a building to get out of its way.
-import {
-  CAR,
-  HORIZONTAL_ROADS,
-  TRAFFIC_COUNT,
-  TRAFFIC_SPEED,
-  VERTICAL_ROADS,
-  WORLD,
-} from './config.js';
-import { nearestRoadX, nearestRoadY, pointInBuilding, resolveSolid } from './city.js';
-import { intBetween, pick } from './random.js';
+// Cars: the 26 traffic cars that keep the roads alive, the 11 parked cars
+// (one of them the red Comet GT the third mission steals), and the player's
+// own driving physics — acceleration, steering that scales with speed, a
+// handbrake, and a speed controller the autopilot uses to slow for corners.
 
-const TRAFFIC_KINDS = ['sedan', 'sedan', 'sedan', 'taxi', 'van', 'sedan', 'taxi', 'sedan'];
+import { COMET_SPOT, HORIZONTAL, PLAYER, ROAD_HALF, VERTICAL } from './config.js';
 
-function makeCar(random, x, y, angle, kind) {
-  return {
-    x, y, angle,
-    speed: TRAFFIC_SPEED.min + random() * (TRAFFIC_SPEED.max - TRAFFIC_SPEED.min),
-    kind,
-    color: kind === 'taxi' ? 'taxi' : kind === 'comet' ? 'comet' : 'traffic',
-    driven: false,
-    lastTurn: '',
-  };
+const CAR_COLORS = ['#c8ccd4', '#8fa3b8', '#b8a58f', '#7fa38f', '#a38f9a', '#d8d2c0', '#6b7a90'];
+const TRAFFIC_KINDS = ['sedan', 'hatch', 'taxi', 'van', 'pickup'];
+
+function lanePoint(random, axis) {
+  // A point on a road: a random road line, a random spot along it, and a lane
+  // offset so cars keep to one side of the road.
+  if (axis === 'v') {
+    const x = VERTICAL[Math.floor(random() * VERTICAL.length)] + (random() < 0.5 ? -14 : 14);
+    return { x, y: 40 + random() * 2000, angle: random() < 0.5 ? Math.PI / 2 : -Math.PI / 2 };
+  }
+  const y = HORIZONTAL[Math.floor(random() * HORIZONTAL.length)] + (random() < 0.5 ? -14 : 14);
+  return { x: 40 + random() * 2480, y, angle: random() < 0.5 ? 0 : Math.PI };
 }
 
-/** Candidate parking spots along road edges, clear of buildings and mission points. */
-function parkingSpots(city, random) {
-  const spots = [{ x: 2240, y: 1330, angle: -Math.PI / 2, kind: 'comet' }];
-  const tries = 200;
-  for (let t = 0; t < tries && spots.length < 11; t += 1) {
-    const vertical = random() < 0.5;
-    let x;
-    let y;
-    let angle;
-    if (vertical) {
-      const road = pick(random, VERTICAL_ROADS);
-      x = road + (random() < 0.5 ? 40 : -40);
-      y = 120 + random() * (WORLD.height - 240);
+export function createTraffic(random) {
+  const cars = [];
+  for (let i = 0; i < 26; i += 1) {
+    const axis = random() < 0.5 ? 'v' : 'h';
+    const p = lanePoint(random, axis);
+    cars.push({
+      kind: TRAFFIC_KINDS[Math.floor(random() * TRAFFIC_KINDS.length)],
+      x: p.x, y: p.y, angle: p.angle,
+      speed: 150 + random() * 110, radius: 20, color: CAR_COLORS[Math.floor(random() * CAR_COLORS.length)],
+      axis, road: axis === 'v' ? Math.round(p.x / 10) * 10 : Math.round(p.y / 10) * 10,
+    });
+  }
+  return cars;
+}
+
+export function createParked(random) {
+  const cars = [];
+  // The Comet GT, parked on the road where the third mission finds it.
+  cars.push({ kind: 'comet', x: COMET_SPOT.x, y: COMET_SPOT.y, angle: Math.PI / 2, speed: 0, radius: 20, color: '#d21f3c', taken: false });
+  const spots = [];
+  for (let i = 0; i < 10; i += 1) {
+    const axis = random() < 0.5 ? 'v' : 'h';
+    let x; let y; let angle;
+    if (axis === 'v') {
+      x = VERTICAL[Math.floor(random() * VERTICAL.length)] + (random() < 0.5 ? -ROAD_HALF + 14 : ROAD_HALF - 14);
+      y = 120 + random() * 1840;
       angle = random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
     } else {
-      const road = pick(random, HORIZONTAL_ROADS);
-      y = road + (random() < 0.5 ? 40 : -40);
-      x = 120 + random() * (WORLD.width - 240);
+      y = HORIZONTAL[Math.floor(random() * HORIZONTAL.length)] + (random() < 0.5 ? -ROAD_HALF + 14 : ROAD_HALF - 14);
+      x = 120 + random() * 2320;
       angle = random() < 0.5 ? 0 : Math.PI;
     }
-    if (pointInBuilding(city, x, y)) continue;
-    if (spots.some((spot) => Math.hypot(spot.x - x, spot.y - y) < 160)) continue;
-    spots.push({ x, y, angle, kind: 'sedan' });
+    if (Math.hypot(x - COMET_SPOT.x, y - COMET_SPOT.y) < 120) continue;
+    spots.push({ kind: 'sedan', x, y, angle, speed: 0, radius: 20, color: CAR_COLORS[Math.floor(random() * CAR_COLORS.length)], taken: false });
   }
-  return spots;
+  return cars.concat(spots);
 }
 
-export function createVehicles(random, city) {
-  const traffic = [];
-  for (let i = 0; i < TRAFFIC_COUNT; i += 1) {
-    const vertical = random() < 0.5;
-    let x;
-    let y;
-    let angle;
-    if (vertical) {
-      x = pick(random, VERTICAL_ROADS);
-      y = 100 + random() * (WORLD.height - 200);
-      angle = random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
-    } else {
-      y = pick(random, HORIZONTAL_ROADS);
-      x = 100 + random() * (WORLD.width - 200);
-      angle = random() < 0.5 ? 0 : Math.PI;
-    }
-    traffic.push(makeCar(random, x, y, angle, pick(random, TRAFFIC_KINDS)));
-  }
-  const parked = parkingSpots(city, random).map((spot) => ({
-    x: spot.x, y: spot.y, angle: spot.angle, speed: 0, kind: spot.kind,
-    color: spot.kind === 'comet' ? 'comet' : 'traffic', driven: false, lastTurn: '',
-  }));
-  return { traffic, parked };
-}
-
-/** Keep a traffic car on its road: it only turns at an intersection, and turns around at the edge. */
-function steerTraffic(car, random, dt) {
-  const step = car.speed * dt;
-  const alongX = Math.abs(Math.cos(car.angle)) > 0.7;
-  if (alongX) {
-    car.x += Math.cos(car.angle) * step;
-    const road = nearestRoadX(car.x);
-    if (Math.abs(car.x - road) < 26) {
-      const key = `${road}:${Math.round(car.y)}`;
-      if (car.lastTurn !== key) {
-        car.lastTurn = key;
-        const roll = random();
-        if (roll < 0.18) car.angle = -Math.PI / 2;
-        else if (roll < 0.36) car.angle = Math.PI / 2;
-      }
-    }
-    if (car.x < 60) { car.x = 60; car.angle = 0; }
-    if (car.x > WORLD.width - 60) { car.x = WORLD.width - 60; car.angle = Math.PI; }
-  } else {
-    car.y += Math.sin(car.angle) * step;
-    const road = nearestRoadY(car.y);
-    if (Math.abs(car.y - road) < 26) {
-      const key = `${Math.round(car.x)}:${road}`;
-      if (car.lastTurn !== key) {
-        car.lastTurn = key;
-        const roll = random();
-        if (roll < 0.18) car.angle = 0;
-        else if (roll < 0.36) car.angle = Math.PI;
-      }
-    }
-    if (car.y < 60) { car.y = 60; car.angle = Math.PI / 2; }
-    if (car.y > WORLD.height - 60) { car.y = WORLD.height - 60; car.angle = -Math.PI / 2; }
-  }
-}
-
-export function updateTraffic(state, dt, city, random) {
-  for (const car of state.traffic) {
-    if (car.driven) continue;
-    steerTraffic(car, random, dt);
-  }
-  // Simple separation so traffic does not pile up: the shove is sideways to the
-  // first car's heading, so two cars meeting head-on slide past each other
-  // instead of grinding nose to nose forever.
-  const all = [...state.traffic, ...state.parked];
-  for (let i = 0; i < all.length; i += 1) {
-    for (let j = i + 1; j < all.length; j += 1) {
-      const a = all[i];
-      const b = all[j];
-      if (a.driven || b.driven) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist > 0.01 && dist < 36) {
-        const px = -Math.sin(a.angle);
-        const py = Math.cos(a.angle);
-        const side = dx * px + dy * py >= 0 ? 1 : -1;
-        const push = 36 - dist;
-        b.x += px * side * push;
-        b.y += py * side * push;
-      }
-    }
+/** Traffic keeps its lane and speed, wrapping around the city edge. */
+export function updateTraffic(cars, dt) {
+  for (const car of cars) {
+    car.x += Math.cos(car.angle) * car.speed * dt;
+    car.y += Math.sin(car.angle) * car.speed * dt;
+    if (car.x < -60) car.x = 2620;
+    if (car.x > 2620) car.x = -60;
+    if (car.y < -60) car.y = 2140;
+    if (car.y > 2140) car.y = -60;
   }
 }
 
 /**
- * Arcade car physics for the car the player drives. Returns true when the car
- * hit a wall this step. Steering scales with speed so the car cannot spin in
- * place, and a wall hit scrubs speed instead of stopping the car dead.
+ * The player's car: accelerate, brake and reverse, steer more at low speed
+ * and less at high speed, handbrake to stop fast. Walls stop the car; other
+ * cars only slow it, so traffic never traps the player.
  */
-export function stepPlayerCar(car, input, dt, city) {
-  if (input.up) car.speed += CAR.accel * dt;
-  if (input.down) car.speed -= (car.speed > 0 ? CAR.brake : CAR.reverseAccel) * dt;
-  if (input.handbrake) {
-    car.speed -= Math.sign(car.speed) * CAR.handbrakeDecel * dt;
-    if (Math.abs(car.speed) < 12) car.speed = 0;
+export function driveCar(car, input, dt, city) {
+  if (input.up) car.speed += PLAYER.accel * dt;
+  if (input.down) car.speed -= (car.speed > 20 ? PLAYER.brake : PLAYER.accel * 0.55) * dt;
+  if (input.handbrake) car.speed -= Math.sign(car.speed) * PLAYER.handbrake * dt;
+  car.speed -= car.speed * 0.35 * dt;
+  if (Math.abs(car.speed) < 4 && !input.up && !input.down) car.speed = 0;
+  car.speed = Math.max(-PLAYER.reverseMax, Math.min(PLAYER.topSpeed, car.speed));
+  const steer = (input.left ? -1 : 0) + (input.right ? 1 : 0);
+  if (steer !== 0 && Math.abs(car.speed) > 5) {
+    const grip = Math.max(0.35, 1 - Math.abs(car.speed) / PLAYER.topSpeed * 0.65);
+    car.angle += steer * PLAYER.steer * grip * dt * Math.sign(car.speed);
   }
-  car.speed -= car.speed * CAR.drag * dt;
-  if (car.speed > CAR.maxSpeed) car.speed = CAR.maxSpeed;
-  if (car.speed < -CAR.maxReverse) car.speed = -CAR.maxReverse;
-  const grip = Math.min(1, Math.abs(car.speed) / 150);
-  const turn = (input.right ? 1 : 0) - (input.left ? 1 : 0);
-  car.angle += turn * CAR.turnRate * grip * dt * (car.speed < 0 ? -1 : 1);
   car.x += Math.cos(car.angle) * car.speed * dt;
   car.y += Math.sin(car.angle) * car.speed * dt;
-  const hit = resolveSolid(city, car, CAR.radius);
-  if (hit && Math.abs(car.speed) > 60) car.speed *= 0.6;
-  return hit;
+  // A wall only pushes the car out of the wall (resolveSolid, along the axis
+  // of least penetration); it never eats the car's speed, so the along-wall
+  // part of the motion carries the car around the building instead of the car
+  // grinding to a stop against it.
+  city.resolveSolid(car);
+  return car;
 }
 
 /**
- * The nearest car the player could get into, within 60 units, or null. A parked
- * car wins over a moving one: on foot you grab what is standing still, and it
- * keeps the Comet theft deterministic when traffic is passing the same spot.
+ * The autopilot's speed controller: full speed on a straight, town speed
+ * (~110) within 220 px of a waypoint, so a fast car turning swings wide.
  */
-export function nearestCar(state, x, y) {
-  const closest = (list) => {
-    let best = null;
-    let bestDist = 60;
-    for (const car of list) {
-      if (car.driven) continue;
-      const dist = Math.hypot(car.x - x, car.y - y);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = car;
-      }
-    }
-    return best;
-  };
-  return closest(state.parked) ?? closest(state.traffic);
-}
-
-export function carCount(state) {
-  return state.traffic.length + state.parked.length;
+export function autopilotDrive(car, tx, ty, dt, city) {
+  const want = Math.atan2(ty - car.y, tx - car.x);
+  let diff = want - car.angle;
+  while (diff > Math.PI) diff -= Math.PI * 2;
+  while (diff < -Math.PI) diff += Math.PI * 2;
+  const distance = Math.hypot(tx - car.x, ty - car.y);
+  const desired = distance < 220 ? 110 : 560;
+  const speed = Math.abs(car.speed);
+  const input = { up: false, down: false, left: false, right: false, handbrake: false };
+  input.up = speed < desired && (Math.abs(diff) < 0.9 || speed < 100);
+  input.down = speed > desired + 40 || (Math.abs(diff) > 1.2 && speed > 200);
+  input.left = diff < -0.08;
+  input.right = diff > 0.08;
+  return driveCar(car, input, dt, city);
 }

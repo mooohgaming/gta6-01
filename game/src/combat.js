@@ -1,172 +1,140 @@
-// Combat: the player's pistol (a 12-round magazine, a reload, a fire rate) and the
-// bullets both sides fire. A bullet stops at the first thing it hits. Killing a
-// pedestrian is a crime; killing a cop is a bigger one; Vultures are fair game.
+// Combat and pickups: the pistol (12-round mag, reload, aim with the mouse
+// or the facing direction), its bullets and the enemy's, and the cash, health
+// and ammo pickups scattered around the city.
+
 import { GUN } from './config.js';
-import { pointInBuilding } from './city.js';
 
 export function createGun() {
-  return { ammo: GUN.mag, mag: GUN.mag, reloading: false, reloadTimer: 0, cooldown: 0 };
+  return { ammo: GUN.mag, reserve: 999, reloading: false, reloadTimer: 0, cooldown: 0 };
 }
 
-export function startReload(gun) {
-  if (gun.reloading || gun.ammo === gun.mag) return;
-  gun.reloading = true;
-  gun.reloadTimer = GUN.reloadSeconds;
-}
-
-export function updateGun(gun, dt) {
-  if (gun.cooldown > 0) gun.cooldown -= dt;
-  if (!gun.reloading) return;
-  gun.reloadTimer -= dt;
-  if (gun.reloadTimer <= 0) {
-    gun.ammo = gun.mag;
-    gun.reloading = false;
+export function createPickups(random, city) {
+  const pickups = [];
+  const kinds = ['cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'cash', 'health', 'health', 'health', 'health', 'ammo', 'ammo', 'ammo', 'ammo'];
+  for (let i = 0; i < 20; i += 1) {
+    let x; let y; let tries = 0;
+    do {
+      const p = city.nearestRoadPoint(100 + random() * 2360, 100 + random() * 1880);
+      x = p.x + (random() - 0.5) * 40;
+      y = p.y + (random() - 0.5) * 40;
+      tries += 1;
+    } while (city.resolveSolid({ x, y, radius: 16 }) && tries < 8);
+    pickups.push({ kind: kinds[i], x, y, taken: false, bob: random() * Math.PI * 2 });
   }
+  return pickups;
 }
 
-/** Fire one round toward (aimX, aimY). Returns true when a bullet left the barrel. */
-export function tryShoot(state, aimX, aimY) {
-  const gun = state.gun;
+/**
+ * Fire the pistol. Returns true when a bullet left the barrel. Aiming with
+ * the mouse (aimActive) shoots at the cursor; otherwise it shoots where the
+ * player faces. An empty mag starts a reload instead of firing.
+ */
+export function fireGun(gun, player, bullets, aimX, aimY, aimActive) {
   if (gun.reloading) return false;
+  // An empty mag starts a reload even while the trigger is still cooling down.
   if (gun.ammo <= 0) {
-    startReload(gun);
+    gun.reloading = true;
+    gun.reloadTimer = GUN.reloadSeconds;
     return false;
   }
   if (gun.cooldown > 0) return false;
   gun.ammo -= 1;
-  gun.cooldown = GUN.fireInterval;
-  const player = state.player;
-  let dx = aimX - player.x;
-  let dy = aimY - player.y;
-  let dist = Math.hypot(dx, dy);
-  if (dist < 1) {
-    // Aiming at your own feet means straight ahead.
-    dx = Math.cos(player.angle);
-    dy = Math.sin(player.angle);
-    dist = 1;
+  gun.cooldown = 0.16;
+  const angle = aimActive ? Math.atan2(aimY - player.y, aimX - player.x) : player.angle;
+  const ox = player.x + Math.cos(angle) * (player.inCar ? 26 : 18);
+  const oy = player.y + Math.sin(angle) * (player.inCar ? 26 : 18);
+  bullets.push({ x: ox, y: oy, vx: Math.cos(angle) * GUN.bulletSpeed, vy: Math.sin(angle) * GUN.bulletSpeed, life: GUN.range, damage: GUN.damage });
+  if (gun.ammo === 0) {
+    gun.reloading = true;
+    gun.reloadTimer = GUN.reloadSeconds;
   }
-  state.bullets.push({
-    x: player.x + (dx / dist) * 18,
-    y: player.y + (dy / dist) * 18,
-    vx: (dx / dist) * GUN.bulletSpeed,
-    vy: (dy / dist) * GUN.bulletSpeed,
-    life: GUN.bulletRange / GUN.bulletSpeed,
-    damage: GUN.bulletDamage,
-    from: 'player',
-  });
   return true;
 }
 
-function hitPerson(list, bullet) {
-  for (let i = 0; i < list.length; i += 1) {
-    const person = list[i];
-    const dx = person.x - bullet.x;
-    const dy = person.y - bullet.y;
-    if (dx * dx + dy * dy < 15 * 15) return { person, index: i };
+export function updateGun(gun, dt) {
+  if (gun.cooldown > 0) gun.cooldown -= dt;
+  if (gun.reloading) {
+    gun.reloadTimer -= dt;
+    if (gun.reloadTimer <= 0) {
+      gun.reloading = false;
+      gun.ammo = GUN.mag;
+    }
   }
-  return null;
 }
 
-/**
- * Advance the player's bullets. Returns the kills that happened, so the world can
- * charge the crimes: { ped: n, cop: n, vulture: n }.
- */
-export function updateBullets(state, dt, city) {
-  const kills = { ped: 0, cop: 0, vulture: 0 };
-  const kept = [];
-  for (const bullet of state.bullets) {
-    bullet.x += bullet.vx * dt;
-    bullet.y += bullet.vy * dt;
-    bullet.life -= dt;
-    if (bullet.life <= 0) continue;
-    if (pointInBuilding(city, bullet.x, bullet.y)) continue;
-    const hitPeople = hitPerson(state.people, bullet);
-    const hitCops = hitPeople === null ? hitPerson(state.cops, bullet) : null;
-    const hit = hitPeople ?? hitCops;
-    if (hit === null) {
-      kept.push(bullet);
-      continue;
-    }
-    const person = hit.person;
-    person.health -= bullet.damage;
-    if (person.health <= 0) {
-      if (person.kind === 'ped') {
-        kills.ped += 1;
-        state.people.splice(hit.index, 1);
-      } else if (person.kind === 'vulture') {
-        kills.vulture += 1;
-        state.people.splice(hit.index, 1);
-      } else if (person.kind === 'cop') {
-        kills.cop += 1;
-        state.cops.splice(hit.index, 1);
+function bulletHitsCircle(b, c) {
+  return Math.hypot(b.x - c.x, b.y - c.y) < c.radius + 6;
+}
+
+/** Move bullets, stop them at walls, and apply their hits. */
+export function updateBullets(bullets, dt, city, people, cops, interceptors, damagePlayer) {
+  for (let i = bullets.length - 1; i >= 0; i -= 1) {
+    const b = bullets[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    let dead = b.life <= 0;
+    if (!dead && city.resolveSolid({ x: b.x, y: b.y, radius: 2 })) dead = true;
+    if (!dead) {
+      for (const person of people) {
+        if (person.kind === 'vulture' && bulletHitsCircle(b, person)) {
+          person.health -= b.damage;
+          if (person.health <= 0) people.splice(people.indexOf(person), 1);
+          dead = true;
+          break;
+        }
       }
     }
-  }
-  state.bullets = kept;
-  return kills;
-}
-
-/** Vultures and Interceptors shoot back when the player is close enough. */
-export function updateEnemyFire(state, dt, city, random) {
-  for (const vulture of state.people) {
-    if (vulture.kind !== 'vulture') continue;
-    vulture.shootCooldown -= dt;
-    const dist = Math.hypot(state.player.x - vulture.x, state.player.y - vulture.y);
-    if (vulture.shootCooldown <= 0 && dist < 450) {
-      vulture.shootCooldown = 1.4 + random() * 0.6;
-      fireEnemyBullet(state, vulture, 8, 0.12, random);
-    }
-  }
-  for (const interceptor of state.interceptors) {
-    interceptor.shootCooldown -= dt;
-    const dist = Math.hypot(state.player.x - interceptor.x, state.player.y - interceptor.y);
-    if (interceptor.shootCooldown <= 0 && dist < 500 && state.player.wanted >= 3) {
-      interceptor.shootCooldown = 1.1 + random() * 0.5;
-      fireEnemyBullet(state, interceptor, 6, 0.18, random);
-    }
-  }
-}
-
-function fireEnemyBullet(state, shooter, damage, spread, random) {
-  const player = state.player;
-  // The miss spread comes from the seeded random, never the clock, so a replay
-  // of the same seed takes the same shots.
-  const angle = Math.atan2(player.y - shooter.y, player.x - shooter.x) + (random() - 0.5) * spread * 2;
-  state.enemyBullets.push({
-    x: shooter.x + Math.cos(angle) * 20,
-    y: shooter.y + Math.sin(angle) * 20,
-    vx: Math.cos(angle) * 760,
-    vy: Math.sin(angle) * 760,
-    life: 1.2,
-    damage,
-    from: shooter.kind,
-  });
-}
-
-/**
- * Advance enemy bullets. Returns true when the player was hit down to zero health.
- */
-export function updateEnemyBullets(state, dt, city) {
-  const player = state.player;
-  const kept = [];
-  for (const bullet of state.enemyBullets) {
-    bullet.x += bullet.vx * dt;
-    bullet.y += bullet.vy * dt;
-    bullet.life -= dt;
-    if (bullet.life <= 0) continue;
-    if (pointInBuilding(city, bullet.x, bullet.y)) continue;
-    const dx = player.x - bullet.x;
-    const dy = player.y - bullet.y;
-    if (dx * dx + dy * dy < 16 * 16) {
-      player.health -= bullet.damage;
-      if (player.health <= 0) {
-        player.health = 0;
-        state.over = 'wasted';
+    if (!dead) {
+      for (const cop of cops) {
+        if (bulletHitsCircle(b, cop)) {
+          cops.splice(cops.indexOf(cop), 1);
+          dead = true;
+          break;
+        }
       }
-      continue;
     }
-    kept.push(bullet);
+    if (!dead) {
+      for (const car of interceptors) {
+        if (bulletHitsCircle(b, car)) {
+          car.speed *= 0.4;
+          dead = true;
+          break;
+        }
+      }
+    }
+    if (dead) bullets.splice(i, 1);
   }
-  state.enemyBullets = kept;
-  return state.over === 'wasted';
+}
+
+/** Enemy bullets: they only ever hurt the player. */
+export function updateEnemyBullets(enemyBullets, dt, city, player, damagePlayer) {
+  for (let i = enemyBullets.length - 1; i >= 0; i -= 1) {
+    const b = enemyBullets[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    b.life -= dt;
+    let dead = b.life <= 0;
+    if (!dead && city.resolveSolid({ x: b.x, y: b.y, radius: 2 })) dead = true;
+    if (!dead && Math.hypot(b.x - player.x, b.y - player.y) < (player.inCar ? 24 : 16)) {
+      damagePlayer(b.damage);
+      dead = true;
+    }
+    if (dead) enemyBullets.splice(i, 1);
+  }
+}
+
+/** Pickups the player walks or drives over: cash, health, ammo. */
+export function collectPickups(pickups, player, gun) {
+  let cash = 0;
+  for (const p of pickups) {
+    if (p.taken) continue;
+    if (Math.hypot(p.x - player.x, p.y - player.y) < 30) {
+      p.taken = true;
+      if (p.kind === 'cash') cash += 25;
+      else if (p.kind === 'health') player.health = Math.min(100, player.health + 40);
+      else if (p.kind === 'ammo') gun.ammo = GUN.mag;
+    }
+  }
+  return cash;
 }
